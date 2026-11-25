@@ -405,6 +405,9 @@ static void set_chunks(struct win *w, const char *text)
 		while (w->chunks[w->nchunks].len && s[w->chunks[w->nchunks].len
 						       - 1] == '\n')
 			w->chunks[w->nchunks].len--;
+		w->chunks[w->nchunks].blank = *p &&
+		    p - s > w->chunks[w->nchunks].len ?
+		    p - s - w->chunks[w->nchunks].len - 1 : 0;
 		w->chunks[w->nchunks].s = xstrndup(s, w->chunks[w->nchunks].len);
 		w->chunks[w->nchunks].len = strlen(w->chunks[w->nchunks].s);
 		if (!w->chunks[w->nchunks].len)

@@ -142,7 +142,8 @@ enum { W_LIST, W_MSG, W_COMPOSE, W_TEXT, W_WIZARD };
 
 struct chunk {
 	char *s;
-	int len, quote;
+	/* blank counts the empty lines that follow the run */
+	int len, quote, blank;
 };
 
 struct win {

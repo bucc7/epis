@@ -373,10 +373,18 @@ static void text_view(struct win *w, int li)
 			.sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
 			.padding = CLAY_PADDING_ALL(cfg.padding * 2),
 			.layoutDirection = CLAY_TOP_TO_BOTTOM } }) {
-			for (i = 0; i < w->nchunks; i++)
+			for (i = 0; i < w->nchunks; i++) {
 				CLAY_TEXT(cstr(w->chunks[i].s),
 					  txt(FONT_MONO, w->chunks[i].quote ?
 					      C_QUOTE : C_FG, 0));
+				if (w->chunks[i].blank)
+					CLAY({ .layout = { .sizing = {
+						CLAY_SIZING_GROW(0),
+						CLAY_SIZING_FIXED(
+						w->chunks[i].blank * font_lineh(
+						FONT_MONO, cfg.font_size)) } } }) {
+					}
+			}
 		}
 	}
 }

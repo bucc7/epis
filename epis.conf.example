@@ -5,10 +5,12 @@ maildir = ~/Mail
 leader = <Space>
 # vim keys in the message editor
 vim_edit = yes
+# the menu inside the window; macOS always uses the system menu bar
 menubar = yes
 font_size = 15
 # font = /usr/share/fonts/noto/NotoSans-Regular.ttf
 # font_mono = /usr/share/fonts/noto/NotoSansMono-Regular.ttf
+# on macOS, for example: font_mono = /System/Library/Fonts/SFNSMono.ttf
 # extra UI zoom on top of the output scale
 # scale = 1.25
 

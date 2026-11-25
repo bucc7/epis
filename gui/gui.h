@@ -2,39 +2,87 @@
 #ifndef GUI_H
 #define GUI_H
 
+#ifndef __APPLE__
 #include <vulkan/vulkan.h>
+#endif
 
 #include "clay.h"
 #include "epis.h"
 
-/* platform (wayland.c or x11.c) */
+/* platform (wayland.c, x11.c or cocoa.c) */
 enum {
 	E_NONE, E_KEY, E_MOTION, E_BUTTON, E_SCROLL, E_RESIZE, E_CLOSE,
-	E_EXPOSE
+	E_EXPOSE, E_COMMAND
 };
 
 enum { MOD_SHIFT = 1, MOD_CTRL = 2, MOD_ALT = 4, MOD_SUPER = 8 };
 
+/* keys that bindings refer to by name; K_F1 to K_F1 + 11 are F1 to F12 */
+enum {
+	K_NONE, K_CR, K_ESC, K_BS, K_TAB, K_DEL, K_UP, K_DOWN, K_LEFT,
+	K_RIGHT, K_HOME, K_END, K_PAGEUP, K_PAGEDOWN, K_SPACE, K_F1
+};
+
+/* cp is the unshifted-by-ctrl character of a key, used for <C-x> */
 struct event {
 	int type;
-	uint32_t sym, mods;
+	uint32_t key, cp, mods;
 	char text[16];
+	const char *cmd;
 	float x, y, dy;
 	int button, pressed;
 };
 
+struct menu_item {
+	const char *label, *cmd;
+};
+
 int plat_init(const char *title, int w, int h);
-int plat_fd(void);
-int plat_dispatch(void);
+int plat_wait(const int *fds, int nfds);
 int plat_next(struct event *ev);
-int plat_timeout(void);
+int plat_menu(const char *const *titles,
+	      const struct menu_item *const *items);
 void plat_size(int *w, int *h);
 float plat_scale(void);
+void plat_quit(void);
+#ifdef __APPLE__
+void *plat_metal_layer(void);
+#else
 const char *plat_vk_ext(void);
 int plat_vk_surface(VkInstance inst, VkSurfaceKHR *s);
-void plat_quit(void);
+void xkb_event(struct event *ev, uint32_t sym);
+#endif
 
-/* renderer (render.c) */
+/* renderer: shared batching (render.c), drawing (vulkan.c or metal.c) */
+#define ATLAS 2048
+
+/* one instanced quad, laid out as the shaders expect it */
+struct inst {
+	float rect[4], uv[4], color[4], params[4];
+};
+
+/* a run of instances sharing a scissor rectangle in pixels */
+struct batch {
+	uint32_t first, count;
+	int x, y, w, h;
+};
+
+struct scene {
+	struct inst *data;
+	size_t n, cap;
+	struct batch *b, sc;
+	size_t nb, bcap;
+	int w, h;
+	float scale;
+	uint32_t clear;
+	char *shot;
+};
+
+extern struct scene scene;
+
+void scene_reset(int w, int h, uint32_t clear);
+void scene_unpack(uint32_t col, float *rgba);
+void scene_shot(const uint8_t *pix, int bgr);
 int r_init(void);
 void r_quit(void);
 int r_begin(uint32_t clear);
@@ -135,10 +183,6 @@ struct picker {
 	int n, *match, nmatch, sel, top;
 };
 
-struct menu_item {
-	const char *label, *cmd;
-};
-
 struct hit {
 	Clay_ElementId id;
 	int kind, a, b;
@@ -174,17 +218,19 @@ struct app {
 	struct node *leaves[64];
 	int nleaves;
 	float scale;
+	int native_menu;
 };
 
 extern struct app app;
-extern const char *menu_titles[];
-extern const struct menu_item *menu_items[];
+extern const char *const menu_titles[];
+extern const struct menu_item *const menu_items[];
 extern const struct menu_item ctx_items[];
 
 void ui_status(int err, const char *fmt, ...);
 void ui_command(const char *line);
 void ui_layout(Clay_RenderCommandArray *out);
 void draw(void);
+void ui_refresh(void);
 void hit_add(Clay_ElementId id, int kind, int a, int b);
 Clay_String cstr(const char *s);
 Clay_String fstr(const char *fmt, ...);

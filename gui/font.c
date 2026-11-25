@@ -7,7 +7,6 @@
 
 #include "gui.h"
 
-#define ATLAS 2048
 #define CACHE 8192
 
 struct glyph {
@@ -26,6 +25,7 @@ static struct glyph cache[CACHE];
 static float scale = 1;
 
 static const char *ui_fonts[] = {
+	"/System/Library/Fonts/Supplemental/Arial.ttf",
 	"/usr/share/fonts/noto/NotoSans-Regular.ttf",
 	"/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
 	"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
@@ -39,6 +39,7 @@ static const char *ui_fonts[] = {
 };
 
 static const char *mono_fonts[] = {
+	"/System/Library/Fonts/Menlo.ttc",
 	"/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
 	"/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
 	"/usr/share/fonts/TTF/DejaVuSansMono.ttf",
@@ -50,6 +51,7 @@ static const char *mono_fonts[] = {
 };
 
 static const char *bold_fonts[] = {
+	"/System/Library/Fonts/Supplemental/Arial Bold.ttf",
 	"/usr/share/fonts/noto/NotoSans-Bold.ttf",
 	"/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
 	"/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
@@ -60,6 +62,10 @@ static const char *bold_fonts[] = {
 };
 
 static const char *fallback_fonts[] = {
+	"/System/Library/Fonts/Apple Symbols.ttf",
+	"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+	"/System/Library/Fonts/Hiragino Sans GB.ttc",
+	"/System/Library/Fonts/AppleSDGothicNeo.ttc",
 	"/usr/share/fonts/dejavu/DejaVuSans.ttf",
 	"/usr/share/fonts/TTF/DejaVuSans.ttf",
 	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",

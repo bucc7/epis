@@ -5,7 +5,7 @@ Maildir, sends mail over SMTP and offers two interfaces on the same core:
 
 - a graphical client that you drive with vim-style keys, laid out with
   [Clay](https://github.com/nicbarker/clay) and drawn with Vulkan on Wayland
-  or X11;
+  or X11, and with Metal on macOS;
 - a headless command line with JSON output, for cron jobs, scripts and AI
   agents.
 
@@ -13,17 +13,41 @@ It is distributed under the MIT license.
 
 ## Build
 
-Requirements: a C11 compiler, make, `glslc`, OpenSSL, FreeType, xkbcommon,
-the Vulkan loader and headers, and either wayland-client, wayland-cursor and
-wayland-protocols or xcb and xkbcommon-x11.
+Requirements: a C11 compiler, GNU make, OpenSSL and FreeType. The graphical
+client also needs, on Linux, `glslc`, xkbcommon, the Vulkan loader and
+headers, and either wayland-client, wayland-cursor and wayland-protocols or
+xcb and xkbcommon-x11. On macOS it needs only the system frameworks and the
+Xcode command line tools:
 
-    make                 # Wayland build
+    xcode-select --install
+    brew install pkgconf openssl@3 freetype
+
+Then build:
+
+    make                 # Cocoa on macOS, Wayland on Linux
     make WINDOW=x11      # X11 build
     make GUI=0           # headless CLI only, needs just OpenSSL
     make install         # PREFIX=/usr/local by default
 
 `config.mk` holds the compile-time options. `make format` runs `indent
 -linux` over the sources.
+
+## macOS
+
+The menus are in the system menu bar, so none is drawn in the window and the
+`menu` and `menubar` commands do nothing. Cmd-Q, Cmd-H and Cmd-M quit, hide
+and minimize. Key bindings use Control as written (`<C-w>v`); Command is left
+to the system.
+
+Option types characters, as it does elsewhere on macOS, so layouts that need
+it for `@`, `[` or `{` work. It counts as Alt (`<A-...>`) only together with
+Control or with a key such as an arrow or Return. Control-click is a right
+click.
+
+The configuration and token paths are the same as on Linux. The Metal shader
+is compiled when epis starts, so the Metal toolchain is not needed to build.
+`make` installs a plain binary, not an application bundle; start it from a
+terminal.
 
 ## First run
 
@@ -101,10 +125,11 @@ set in `[theme]`, and `include` loads a theme file (see `themes/`).
 
 ## Not implemented yet
 
-- macOS (Cocoa/Metal) and Windows (win32/Vulkan) backends; the spec defers
-  them.
-- Global menu bars (KDE dbusmenu, macOS): the menu is always drawn inside
-  the window.
+- The Windows (win32/Vulkan) backend; the spec defers it.
+- The KDE global menu bar (dbusmenu): on Linux the menu is always drawn
+  inside the window.
+- Dead keys and input methods: no backend composes them.
+- A macOS application bundle (`.app`).
 - GSSAPI/Kerberos and NTLM authentication.
 - Fractional scaling on Wayland (integer scale plus the `scale` option),
   client-side decorations on compositors without xdg-decoration (GNOME),

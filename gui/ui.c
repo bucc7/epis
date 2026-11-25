@@ -3,6 +3,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #include <signal.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -10,8 +13,6 @@
 #include <strings.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
-#include <xkbcommon/xkbcommon.h>
 
 #include "gui.h"
 
@@ -114,7 +115,7 @@ struct cbind {
 static struct cbind *binds;
 static int nbinds;
 
-const char *menu_titles[] = { "File", "Message", "View", "Window", "Help",
+const char *const menu_titles[] = { "File", "Message", "View", "Window", "Help",
 	NULL };
 
 static const struct menu_item m_file[] = {
@@ -147,7 +148,7 @@ static const struct menu_item m_help[] = {
 	{ NULL, NULL }
 };
 
-const struct menu_item *menu_items[] = { m_file, m_msg, m_view, m_win,
+const struct menu_item *const menu_items[] = { m_file, m_msg, m_view, m_win,
 	m_help };
 
 const struct menu_item ctx_items[] = {
@@ -291,42 +292,32 @@ static int bind_match(const char *ctx, const char *seq, const char **cmd)
 /* turn a key event into its token, e.g. "j", "<CR>" or "<C-w>" */
 static void key_token(struct event *e, char *out, size_t n)
 {
-	static const struct {
-		uint32_t sym;
-		const char *name;
-	} sp[] = {
-		{ XKB_KEY_Return, "CR" }, { XKB_KEY_KP_Enter, "CR" },
-		{ XKB_KEY_Escape, "Esc" }, { XKB_KEY_BackSpace, "BS" },
-		{ XKB_KEY_Tab, "Tab" }, { XKB_KEY_ISO_Left_Tab, "Tab" },
-		{ XKB_KEY_Delete, "Del" }, { XKB_KEY_Up, "Up" },
-		{ XKB_KEY_Down, "Down" }, { XKB_KEY_Left, "Left" },
-		{ XKB_KEY_Right, "Right" }, { XKB_KEY_Home, "Home" },
-		{ XKB_KEY_End, "End" }, { XKB_KEY_Prior, "PageUp" },
-		{ XKB_KEY_Next, "PageDown" }, { XKB_KEY_space, "Space" },
+	static const char *sp[] = {
+		[K_CR] = "CR", [K_ESC] = "Esc", [K_BS] = "BS",
+		[K_TAB] = "Tab", [K_DEL] = "Del", [K_UP] = "Up",
+		[K_DOWN] = "Down", [K_LEFT] = "Left", [K_RIGHT] = "Right",
+		[K_HOME] = "Home", [K_END] = "End", [K_PAGEUP] = "PageUp",
+		[K_PAGEDOWN] = "PageDown", [K_SPACE] = "Space",
 	};
 	char mods[16] = "";
-	size_t i;
+	const char *shift = e->mods & MOD_SHIFT ? "S-" : "";
 
 	if (e->mods & MOD_CTRL)
 		strcat(mods, "C-");
 	if (e->mods & MOD_ALT)
 		strcat(mods, "A-");
-	for (i = 0; i < sizeof(sp) / sizeof(*sp); i++)
-		if (e->sym == sp[i].sym) {
-			snprintf(out, n, "<%s%s%s>", mods, e->mods & MOD_SHIFT ?
-				 "S-" : "", sp[i].name);
-			return;
-		}
-	if (e->sym >= XKB_KEY_F1 && e->sym <= XKB_KEY_F12) {
-		snprintf(out, n, "<%s%sF%u>", mods, e->mods & MOD_SHIFT ?
-			 "S-" : "", e->sym - XKB_KEY_F1 + 1);
+	if (e->key >= K_F1) {
+		snprintf(out, n, "<%s%sF%u>", mods, shift, e->key - K_F1 + 1);
+		return;
+	}
+	if (e->key != K_NONE) {
+		snprintf(out, n, "<%s%s%s>", mods, shift, sp[e->key]);
 		return;
 	}
 	if (mods[0]) {
-		uint32_t cp = xkb_keysym_to_utf32(xkb_keysym_to_lower(e->sym));
 		char u[8] = "";
 
-		u[utf8_encode(u, cp ? cp : '?')] = 0;
+		u[utf8_encode(u, e->cp ? e->cp : '?')] = 0;
 		snprintf(out, n, "<%s%s>", mods, u);
 		return;
 	}
@@ -1491,6 +1482,9 @@ void ui_command(const char *line)
 		}
 	} else if (!strcmp(name, "sidebar")) {
 		app.sidebar = !app.sidebar;
+	} else if (app.native_menu && (!strcmp(name, "menubar") ||
+					!strcmp(name, "menu"))) {
+		ui_status(0, "the menu is in the system menu bar");
 	} else if (!strcmp(name, "menubar")) {
 		cfg.menubar = !cfg.menubar;
 	} else if (!strcmp(name, "menu")) {
@@ -1864,9 +1858,27 @@ static void wheel(float dy)
 	}
 }
 
+/* run a command chosen from the system menu bar */
+static void menu_command(const char *cmd)
+{
+	if (app.wizard) {
+		if (!strcmp(cmd, "quit"))
+			app.running = 0;
+		return;
+	}
+	picker_close();
+	app.cmdline = app.ctx_open = 0;
+	app.keys[0] = 0;
+	ui_command(cmd);
+	app.dirty = 1;
+}
+
 static void event(struct event *e)
 {
 	switch (e->type) {
+	case E_COMMAND:
+		menu_command(e->cmd);
+		break;
 	case E_KEY:
 		key(e);
 		break;
@@ -2056,12 +2068,43 @@ static void on_signal(int s)
 	(void)s;
 }
 
+/* path of the running executable, used to start background jobs */
+static void self_path(char *out, size_t n)
+{
+#ifdef __APPLE__
+	uint32_t size = n;
+
+	if (_NSGetExecutablePath(out, &size))
+		out[0] = 0;
+#else
+	ssize_t len = readlink("/proc/self/exe", out, n - 1);
+
+	out[len > 0 ? len : 0] = 0;
+#endif
+}
+
+/* redraw if needed, reloading the fonts when the output scale changed */
+void ui_refresh(void)
+{
+	if (!app.running)
+		return;
+	if (plat_scale() != app.scale) {
+		app.scale = plat_scale();
+		font_init(app.scale);
+		Clay_ResetMeasureTextCache();
+		app.dirty = 1;
+	}
+	if (app.dirty) {
+		app.dirty = 0;
+		draw();
+	}
+}
+
 int gui_main(const char *startup)
 {
-	ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
 	struct event ev;
 
-	self[n > 0 ? n : 0] = 0;
+	self_path(self, sizeof(self));
 	signal(SIGCHLD, on_signal);
 	signal(SIGPIPE, SIG_IGN);
 	if (plat_init("epis", 1200, 800)) {
@@ -2073,6 +2116,7 @@ int gui_main(const char *startup)
 	if (font_init(app.scale) || r_init())
 		return 1;
 	binds_init();
+	app.native_menu = plat_menu(menu_titles, menu_items);
 	ed_init(&app.cmd, "", 1);
 	app.sidebar = 1;
 	app.running = 1;
@@ -2107,39 +2151,18 @@ int gui_main(const char *startup)
 		free(dup);
 	}
 	while (app.running) {
-		struct pollfd pfd[9];
-		int i, np = 1, t;
+		int fds[8], i;
 
 		while (plat_next(&ev))
 			event(&ev);
-		if (plat_scale() != app.scale) {
-			app.scale = plat_scale();
-			font_init(app.scale);
-			Clay_ResetMeasureTextCache();
-			app.dirty = 1;
-		}
-		if (app.dirty) {
-			app.dirty = 0;
-			draw();
-		}
+		ui_refresh();
 		if (!app.running)
 			break;
-		pfd[0].fd = plat_fd();
-		pfd[0].events = POLLIN;
-		for (i = 0; i < njobs; i++) {
-			pfd[np].fd = jobs[i].fd;
-			pfd[np++].events = POLLIN;
-		}
-		t = plat_timeout();
-		if (poll(pfd, np, t) < 0 && errno != EINTR)
+		for (i = 0; i < njobs; i++)
+			fds[i] = jobs[i].fd;
+		if (plat_wait(fds, njobs))
 			break;
-		if ((pfd[0].revents & POLLIN) && plat_dispatch())
-			break;
-		for (i = 1; i < np; i++)
-			if (pfd[i].revents) {
-				jobs_poll();
-				break;
-			}
+		jobs_poll();
 	}
 	r_quit();
 	plat_quit();

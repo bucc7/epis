@@ -1,5 +1,7 @@
 /* x11.c - X11 (XCB) window backend */
 #define VK_USE_PLATFORM_XCB_KHR
+#include <errno.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -86,17 +88,6 @@ int plat_init(const char *title, int w, int h)
 	return 0;
 }
 
-int plat_fd(void)
-{
-	xcb_flush(x.c);
-	return xcb_get_file_descriptor(x.c);
-}
-
-int plat_dispatch(void)
-{
-	return xcb_connection_has_error(x.c) ? -1 : 0;
-}
-
 static int translate(xcb_generic_event_t *g, struct event *e)
 {
 	memset(e, 0, sizeof(*e));
@@ -134,7 +125,7 @@ static int translate(xcb_generic_event_t *g, struct event *e)
 				      (k->state >> 13) & 3);
 		e->type = E_KEY;
 		e->pressed = 1;
-		e->sym = xkb_state_key_get_one_sym(x.state, k->detail);
+		xkb_event(e, xkb_state_key_get_one_sym(x.state, k->detail));
 		xkb_state_key_get_utf8(x.state, k->detail, e->text,
 				       sizeof(e->text));
 		e->mods = (k->state & XCB_MOD_MASK_SHIFT ? MOD_SHIFT : 0) |
@@ -187,9 +178,30 @@ int plat_next(struct event *e)
 	return 0;
 }
 
-int plat_timeout(void)
+/* sleep until there is input or one of the file descriptors is readable */
+int plat_wait(const int *fds, int nfds)
 {
-	return -1;
+	struct pollfd p[9];
+	int i;
+
+	xcb_flush(x.c);
+	p[0].fd = xcb_get_file_descriptor(x.c);
+	p[0].events = POLLIN;
+	for (i = 0; i < nfds && i < 8; i++) {
+		p[i + 1].fd = fds[i];
+		p[i + 1].events = POLLIN;
+	}
+	if (poll(p, i + 1, -1) < 0)
+		return errno == EINTR ? 0 : -1;
+	return xcb_connection_has_error(x.c) ? -1 : 0;
+}
+
+/* X11 has no global menu bar, the menu is drawn in the window */
+int plat_menu(const char *const *titles, const struct menu_item *const *items)
+{
+	(void)titles;
+	(void)items;
+	return 0;
 }
 
 void plat_size(int *w, int *h)

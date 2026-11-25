@@ -12,6 +12,12 @@
 
 #include "epis.h"
 
+#ifdef __APPLE__
+#define BROWSER "open"
+#else
+#define BROWSER "xdg-open"
+#endif
+
 static const char *mech_names[] = {
 	"", "PLAIN", "LOGIN", "CRAM-MD5", "SCRAM-SHA-1", "SCRAM-SHA-256",
 	"XOAUTH2", "OAUTHBEARER", ""
@@ -391,7 +397,7 @@ int oauth_authorize(struct account *a)
 	printf("Open this URL in your browser to authorize epis:\n\n%s\n\n",
 	       u.p);
 	fflush(stdout);
-	cmd = xasprintf("xdg-open '%s' >/dev/null 2>&1 &", u.p);
+	cmd = xasprintf(BROWSER " '%s' >/dev/null 2>&1 &", u.p);
 	if (system(cmd))
 		warnx("could not start a browser");
 	free(cmd);

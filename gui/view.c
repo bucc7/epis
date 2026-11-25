@@ -863,7 +863,7 @@ void ui_layout(Clay_RenderCommandArray *out)
 		.sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
 		.layoutDirection = CLAY_TOP_TO_BOTTOM },
 	       .backgroundColor = col(C_BG) }) {
-		if (cfg.menubar && !app.wizard)
+		if (cfg.menubar && !app.wizard && !app.native_menu)
 			menubar();
 		CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
 					       CLAY_SIZING_GROW(0) },

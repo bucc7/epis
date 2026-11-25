@@ -1,6 +1,8 @@
 /* wayland.c - Wayland window backend */
 #define VK_USE_PLATFORM_WAYLAND_KHR
+#include <errno.h>
 #include <linux/input-event-codes.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -207,7 +209,7 @@ static void key_event(uint32_t code)
 
 	if (!wl.state)
 		return;
-	e.sym = xkb_state_key_get_one_sym(wl.state, code);
+	xkb_event(&e, xkb_state_key_get_one_sym(wl.state, code));
 	xkb_state_key_get_utf8(wl.state, code, e.text, sizeof(e.text));
 	if (xkb_state_mod_name_is_active(wl.state, XKB_MOD_NAME_SHIFT,
 					 XKB_STATE_MODS_EFFECTIVE) > 0)
@@ -490,18 +492,6 @@ int plat_init(const char *title, int w, int h)
 	return 0;
 }
 
-int plat_fd(void)
-{
-	wl_display_flush(wl.dpy);
-	return wl_display_get_fd(wl.dpy);
-}
-
-/* read and dispatch protocol events once the display fd is readable */
-int plat_dispatch(void)
-{
-	return wl_display_dispatch(wl.dpy) < 0 ? -1 : 0;
-}
-
 int plat_next(struct event *e)
 {
 	if (wl.qh == wl.qt) {
@@ -521,7 +511,7 @@ int plat_next(struct event *e)
 }
 
 /* milliseconds until the next key repeat, or -1 */
-int plat_timeout(void)
+static int repeat_timeout(void)
 {
 	long long d;
 
@@ -529,6 +519,34 @@ int plat_timeout(void)
 		return -1;
 	d = wl.rnext - now_ms();
 	return d < 0 ? 0 : (int)d;
+}
+
+/* sleep until there is input or one of the file descriptors is readable */
+int plat_wait(const int *fds, int nfds)
+{
+	struct pollfd p[9];
+	int i;
+
+	wl_display_flush(wl.dpy);
+	p[0].fd = wl_display_get_fd(wl.dpy);
+	p[0].events = POLLIN;
+	for (i = 0; i < nfds && i < 8; i++) {
+		p[i + 1].fd = fds[i];
+		p[i + 1].events = POLLIN;
+	}
+	if (poll(p, i + 1, repeat_timeout()) < 0)
+		return errno == EINTR ? 0 : -1;
+	if ((p[0].revents & POLLIN) && wl_display_dispatch(wl.dpy) < 0)
+		return -1;
+	return 0;
+}
+
+/* Wayland has no global menu bar, the menu is drawn in the window */
+int plat_menu(const char *const *titles, const struct menu_item *const *items)
+{
+	(void)titles;
+	(void)items;
+	return 0;
 }
 
 void plat_size(int *w, int *h)

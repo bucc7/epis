@@ -841,14 +841,24 @@ static void statusbar(void)
 	}
 }
 
+/* the space around and between the parts of a finder */
+#define PICK_PAD 10
+#define PICK_GAP 6
+
 static void picker_view(void)
 {
 	struct picker *pk = app.pick;
-	float rh = rowh(), ph = lh * 0.6f;
-	int vis = (int)((ph - rh * 2 - 24) / rh), i;
+	float rh = rowh();
+	float title = font_lineh(FONT_BOLD, cfg.font_size);
+	float mono = font_lineh(FONT_MONO, cfg.font_size);
+	float ui = font_lineh(FONT_UI, cfg.font_size);
+	float input = (mono > ui ? mono : ui) + 10;
+	/* each row adds its height and the gap before it */
+	float room = lh * 0.6f - 2 * PICK_PAD - title - PICK_GAP - input;
+	int vis = (int)(room / (rh + PICK_GAP)), i;
 
-	if (vis < 3)
-		vis = 3;
+	if (vis < 1)
+		vis = 1;
 	if (pk->sel < pk->top)
 		pk->top = pk->sel;
 	if (pk->sel >= pk->top + vis)
@@ -857,8 +867,9 @@ static void picker_view(void)
 		.attachTo = CLAY_ATTACH_TO_ROOT,
 		.offset = { lw * 0.2f, lh * 0.15f }, .zIndex = 100 },
 	       .layout = { .sizing = { CLAY_SIZING_FIXED(lw * 0.6f),
-				       CLAY_SIZING_FIT(0, ph) },
-			   .padding = CLAY_PADDING_ALL(10), .childGap = 6,
+				       CLAY_SIZING_FIT(0, 0) },
+			   .padding = CLAY_PADDING_ALL(PICK_PAD),
+			   .childGap = PICK_GAP,
 			   .layoutDirection = CLAY_TOP_TO_BOTTOM },
 	       .backgroundColor = col(C_MENU_BG),
 	       .cornerRadius = CLAY_CORNER_RADIUS(cfg.radius * 2),

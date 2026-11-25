@@ -363,7 +363,10 @@ char *maildir_trash(struct account *a, const char *path)
 	char *dir = folder_dir(a->name, a->trash);
 	char *cur = xasprintf("%s/cur", dir), *np;
 
-	if (strncmp(path, dir, strlen(dir)) && !access(cur, F_OK))
+	size_t n = strlen(dir);
+
+	/* "Trash-old" is not inside "Trash" */
+	if ((strncmp(path, dir, n) || path[n] != '/') && !access(cur, F_OK))
 		np = maildir_move(path, dir);
 	else
 		np = maildir_set_flags(path, maildir_flags_parse(path) |

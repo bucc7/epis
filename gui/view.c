@@ -10,6 +10,13 @@
 static char frame[FRAME];
 static size_t used;
 static Clay_Context *clay;
+/*
+ * the layout capacities, Clay's defaults until a long message needs more.
+ * They double up to MAXELEMENTS, about half a million lines.
+ */
+#define MAXELEMENTS (1 << 19)
+static int elements = 8192, outgrown;
+static void *clay_memory;
 static float lw, lh;
 
 const char **wizard_label_list(void);
@@ -73,6 +80,15 @@ static Clay_Dimensions measure(Clay_StringSlice t, Clay_TextElementConfig *c,
 
 static void clay_error(Clay_ErrorData e)
 {
+	/* running out of room is cured by laying out again with more */
+	if ((e.errorType == CLAY_ERROR_TYPE_ELEMENTS_CAPACITY_EXCEEDED ||
+	     e.errorType == CLAY_ERROR_TYPE_TEXT_MEASUREMENT_CAPACITY_EXCEEDED ||
+	     e.errorType == CLAY_ERROR_TYPE_ARENA_CAPACITY_EXCEEDED ||
+	     e.errorType == CLAY_ERROR_TYPE_INTERNAL_ERROR) &&
+	    elements < MAXELEMENTS) {
+		outgrown = 1;
+		return;
+	}
 	warnx("layout: %.*s", (int)e.errorText.length, e.errorText.chars);
 }
 
@@ -479,9 +495,12 @@ static void text_view(struct win *w, int li)
 	float bh = elem_h(body), ch = elem_h(content);
 	int i;
 
-	w->maxscroll = ch > bh ? ch - bh : 0;
-	if (w->scroll > w->maxscroll)
-		w->scroll = w->maxscroll;
+	/* a layout that was just rebuilt has no sizes to offer yet */
+	if (bh > 0 && ch > 0) {
+		w->maxscroll = ch > bh ? ch - bh : 0;
+		if (w->scroll > w->maxscroll)
+			w->scroll = w->maxscroll;
+	}
 	w->vislines = bh;
 	CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
 				       CLAY_SIZING_FIT(0) },
@@ -1007,24 +1026,37 @@ static void wizard_view(void)
 	}
 }
 
-/* build the whole interface for the current state */
-void ui_layout(Clay_RenderCommandArray *out)
+/* create the layout context, or replace it with one of a new capacity */
+static void clay_start(void)
+{
+	void *old = clay_memory;
+	uint32_t size;
+
+	if (clay) {
+		Clay_SetMaxElementCount(elements);
+		Clay_SetMaxMeasureTextCacheWordCount(elements * 8);
+	}
+	size = Clay_MinMemorySize();
+	clay_memory = xmalloc(size);
+	clay = Clay_Initialize(Clay_CreateArenaWithCapacityAndMemory(size,
+			       clay_memory), (Clay_Dimensions){ lw, lh },
+			       (Clay_ErrorHandler){ clay_error, 0 });
+	Clay_SetMeasureTextFunction(measure, NULL);
+	/* every line is needed to place a cursor scrolled away */
+	Clay_SetCullingEnabled(false);
+	free(old);
+}
+
+/* build the interface once with the current layout capacity */
+static void build(Clay_RenderCommandArray *out)
 {
 	int w, h, i;
 
 	plat_size(&w, &h);
 	lw = w / app.scale;
 	lh = h / app.scale;
-	if (!clay) {
-		uint32_t sz = Clay_MinMemorySize();
-
-		clay = Clay_Initialize(Clay_CreateArenaWithCapacityAndMemory(
-			sz, xmalloc(sz)), (Clay_Dimensions){ lw, lh },
-			(Clay_ErrorHandler){ clay_error, 0 });
-		Clay_SetMeasureTextFunction(measure, NULL);
-		/* every line is needed to place a cursor scrolled away */
-		Clay_SetCullingEnabled(false);
-	}
+	if (!clay)
+		clay_start();
 	used = 0;
 	app.nhits = 0;
 	app.nleaves = 0;
@@ -1061,6 +1093,19 @@ void ui_layout(Clay_RenderCommandArray *out)
 
 		app.hits[i].box = d.found ? d.boundingBox :
 		    (Clay_BoundingBox){ 0 };
+	}
+}
+
+/* build the whole interface for the current state */
+void ui_layout(Clay_RenderCommandArray *out)
+{
+	for (;;) {
+		outgrown = 0;
+		build(out);
+		if (!outgrown)
+			return;
+		elements *= 2;
+		clay_start();
 	}
 }
 

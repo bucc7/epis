@@ -1,0 +1,111 @@
+# epis
+
+epis is a small mail client written in C11. It syncs IMAP mailboxes to
+Maildir, sends mail over SMTP and offers two interfaces on the same core:
+
+- a graphical client that you drive with vim-style keys, laid out with
+  [Clay](https://github.com/nicbarker/clay) and drawn with Vulkan on Wayland
+  or X11;
+- a headless command line with JSON output, for cron jobs, scripts and AI
+  agents.
+
+It is distributed under the MIT license.
+
+## Build
+
+Requirements: a C11 compiler, make, `glslc`, OpenSSL, FreeType, xkbcommon,
+the Vulkan loader and headers, and either wayland-client, wayland-cursor and
+wayland-protocols or xcb and xkbcommon-x11.
+
+    make                 # Wayland build
+    make WINDOW=x11      # X11 build
+    make GUI=0           # headless CLI only, needs just OpenSSL
+    make install         # PREFIX=/usr/local by default
+
+`config.mk` holds the compile-time options. `make format` runs `indent
+-linux` over the sources.
+
+## First run
+
+Running `epis` without a configuration opens a setup form. It discovers the
+server settings for your address using, in order: the provider's autoconfig
+file, the Thunderbird ISPDB, your MX provider's ISPDB entry, and DNS SRV
+records. If none of those work it guesses `imap.domain` and `smtp.domain`.
+`epis setup` runs the same setup in the terminal. See `epis.conf.example`
+for every option.
+
+For Gmail and Outlook, register an OAuth client with the provider, set
+`oauth` and `oauth_client_id`, then run `epis oauth ACCOUNT` once.
+
+## Command line
+
+    epis sync                          # cron friendly two-way sync
+    epis list --unread --json          # newest first, with stable ids
+    epis read test/INBOX/1795...,U=42  # prints and marks seen
+    echo hi | epis send --to bob@example.com --subject Hello
+    echo thanks | epis reply --send ID
+    epis llm summarize ID              # needs [llm] api key
+
+Run `epis help` for the full list, or see `man epis`.
+
+## Graphical client
+
+The leader key is Space by default (`leader` option).
+
+| keys | action |
+| --- | --- |
+| `<leader>fi` | find an inbox (fuzzy finder) |
+| `<leader>fm` | find a message by subject or sender |
+| `<leader>fc` | find a command |
+| `j` `k` `gg` `G` `<C-d>` `<C-u>` | move in the list or scroll a message |
+| `<CR>`, click | open in the current window |
+| `<S-CR>`, right click | open in a new window / context menu |
+| `r` `R` `f` | reply, reply all, forward |
+| `d` `a` `m` `s` `u` | delete, archive, move, flag, toggle read |
+| `<C-w>v` `<C-w>s` `<C-w>hjkl` `<C-w>q` `<C-w>o` | window management |
+| `<leader>c` `<leader>s` | compose, synchronize |
+| `<leader>a`, `:ask`, `:ai_draft` | summarize, ask, or draft a reply with the LLM |
+| `:` | command line (`:move Archive`, `:attach FILE`, `:send`, `:w`, `:q`, `:!cmd %f`) |
+
+The composer uses vim keys by default (`vim_edit = no` turns them off). It
+supports motions, counts, operators (`d`, `c`, `y`) with motions, visual
+mode, `p`, `u`, `r`, `J`, `o`, and `ZZ` or `:send` to send.
+
+You can rebind every key in `[keys]` and define your own commands in
+`[commands]`. A command can chain others with `;`, run a shell command with
+`!`, or replay keys with `feedkeys`. Colours, corner radius and padding are
+set in `[theme]`, and `include` loads a theme file (see `themes/`).
+
+## Design notes
+
+- **Redraws:** the UI is not drawn in immediate mode. epis redraws only on
+  input, resize or when a background job finishes, and sleeps in `poll(2)`
+  otherwise. It uses no CPU while idle.
+- **Text buffer:** the editor uses a gap buffer. In a benchmark of 400,000
+  typing and deleting edits in bursts at random positions in a ~500 KB
+  document, the gap buffer took 0.02 s and 0.8 MB. An array-backed piece
+  table took 2.0 s and 2.2 MB, and reading the whole text back was about
+  5000 times slower. Emails are small and edits are local, so the gap
+  buffer wins on speed, memory and code size.
+- **Background work:** sync and LLM requests run as child `epis` processes,
+  so the UI never blocks on the network and needs no threads.
+- **Sync:** IMAP sync merges flags three ways against the last synced state
+  stored in `.epis-state`. Local deletions, moves and new messages (such as
+  sent copies and drafts) are uploaded on the next sync. File names carry
+  the UID as `,U=<uid>`, as with mbsync.
+- **Authentication:** PLAIN, LOGIN, CRAM-MD5, SCRAM-SHA-1, SCRAM-SHA-256,
+  XOAUTH2 and OAUTHBEARER, plus the IMAP `LOGIN` command. OAuth2 uses the
+  authorization code flow with PKCE and a loopback redirect.
+- **LLM:** the `llm` commands call the Claude Messages API (default model
+  `claude-opus-5-5`) with a key you provide.
+
+## Not implemented yet
+
+- macOS (Cocoa/Metal) and Windows (win32/Vulkan) backends; the spec defers
+  them.
+- Global menu bars (KDE dbusmenu, macOS): the menu is always drawn inside
+  the window.
+- GSSAPI/Kerberos and NTLM authentication.
+- Fractional scaling on Wayland (integer scale plus the `scale` option),
+  client-side decorations on compositors without xdg-decoration (GNOME),
+  and the system clipboard.

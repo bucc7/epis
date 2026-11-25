@@ -1,0 +1,19 @@
+# a light theme, use with "include = path/to/light.theme" in [theme]
+[theme]
+bg = #eff1f5
+fg = #4c4f69
+panel = #e6e9ef
+border = #ccd0da
+accent = #1e66f5
+select_bg = #bcc0cc
+select_fg = #11111b
+unread = #df8e1d
+dim = #8c8fa1
+menu_bg = #dce0e8
+menu_fg = #4c4f69
+status_bg = #ccd0da
+status_fg = #4c4f69
+error = #d20f39
+flagged = #fe640b
+quote = #40a02b
+cursor = #dc8a78

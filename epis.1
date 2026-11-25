@@ -1,0 +1,108 @@
+.TH EPIS 1 epis\-0.1.0
+.SH NAME
+epis \- small mail client with a vim-like interface
+.SH SYNOPSIS
+.B epis
+.RB [ \-c
+.IR config ]
+.RB [ \-e
+.IR commands ]
+.RI [ command
+.RI [ args ]]
+.SH DESCRIPTION
+.B epis
+reads and sends mail. Without a command it starts the graphical client;
+with a command it runs headless, which suits scripts, cron jobs and AI
+agents. Mail is stored in Maildir folders under
+.IR <maildir>/<account>/<folder> .
+.SH COMMANDS
+.TP
+.B setup
+Interactive account setup in the terminal.
+.TP
+.BR sync " [\-a account] [\-f folder] [\-q]"
+Two-way synchronization with the IMAP server.
+.TP
+.BR list " [\-a account] [\-f folder] [\-n N] [\-\-unread]"
+List messages, newest first. Each line starts with the message id.
+.TP
+.BR search " [\-a account] [\-f folder] [\-\-body] query"
+Search sender, recipients and subject, or bodies with \-\-body.
+.TP
+.BR read " [\-\-raw] [\-\-peek] id"
+Print a message and mark it read unless \-\-peek is given.
+.TP
+.BR send " [\-a account] \-\-to addr [\-\-cc addr] [\-\-bcc addr] [\-\-subject s] [\-\-attach file]... [\-\-raw]"
+Send standard input as the body, or as a complete message with \-\-raw.
+.TP
+.BR reply " [\-\-all] [\-\-send] id"
+Build a reply with standard input above the quote; print it, or send it
+with \-\-send.
+.TP
+.BR forward " \-\-to addr [\-\-send] id"
+.TP
+.BR flag " id [+|\-]flags"
+Change Maildir flags: S seen, R replied, F flagged, T trashed, D draft.
+.TP
+.BR move " id folder", " delete id", " attachments id [\-\-save dir]"
+.TP
+.BR oauth " account"
+Authorize an OAuth2 account (Gmail, Outlook) in the browser.
+.TP
+.BR autoconfig " email"
+Discover server settings.
+.TP
+.BR llm " summarize id | draft id instructions | ask prompt"
+Ask the configured language model.
+.P
+Every command accepts
+.B \-\-json
+for machine readable output.
+.SH GRAPHICAL CLIENT
+Keys follow vim. The leader key defaults to Space.
+.TP
+.B <leader>fi
+find a folder (inbox)
+.TP
+.B <leader>fm
+find a message by subject or sender
+.TP
+.B <leader>fc
+run a command from a list
+.TP
+.B j k gg G <C-d> <C-u>
+move in the message list or scroll a message
+.TP
+.B <CR> <S-CR>
+open the message in this window or in a new window
+.TP
+.B r R f d a m s u
+reply, reply all, forward, delete, archive, move, flag, toggle read
+.TP
+.B <C-w>v <C-w>s <C-w>hjkl <C-w>q <C-w>o
+split side by side or stacked, move between, close and keep windows
+.TP
+.B <leader>c <leader>s <leader>a
+compose, synchronize, summarize with the language model
+.TP
+.B :
+command line, e.g. :move Archive, :attach ~/file.pdf, :send, :w, :q,
+:!shell command (%f is the message file), :feedkeys keys,
+:screenshot file.ppm
+.P
+.B \-e
+runs ;-separated commands right after the window opens.
+.SH FILES
+.TP
+.I ~/.config/epis/config
+configuration, see epis.conf.example
+.TP
+.I ~/.local/share/epis/<account>.oauth
+OAuth2 tokens
+.SH ENVIRONMENT
+.TP
+.B EPIS_TRACE
+print the IMAP and SMTP dialogue to standard error
+.TP
+.B ANTHROPIC_API_KEY
+API key for the llm commands when none is configured

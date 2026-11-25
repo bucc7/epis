@@ -1,0 +1,69 @@
+# epis example configuration, copy to ~/.config/epis/config
+
+[general]
+maildir = ~/Mail
+leader = <Space>
+# vim keys in the message editor
+vim_edit = yes
+menubar = yes
+font_size = 15
+# font = /usr/share/fonts/noto/NotoSans-Regular.ttf
+# font_mono = /usr/share/fonts/noto/NotoSansMono-Regular.ttf
+# extra UI zoom on top of the output scale
+# scale = 1.25
+
+[account work]
+email = me@example.com
+name = My Name
+imap_host = imap.example.com
+imap_port = 993
+imap_security = tls
+smtp_host = smtp.example.com
+smtp_port = 465
+smtp_security = tls
+user = me@example.com
+# auto, plain, login, cram-md5, scram-sha-1, scram-sha-256, xoauth2,
+# oauthbearer or none
+auth = auto
+password_cmd = pass show mail/work
+sent = Sent
+drafts = Drafts
+trash = Trash
+archive = Archive
+signature = My Name
+
+[account gmail]
+email = me@gmail.com
+imap_host = imap.gmail.com
+smtp_host = smtp.gmail.com
+auth = xoauth2
+oauth = google
+oauth_client_id = YOUR-CLIENT-ID.apps.googleusercontent.com
+oauth_client_secret = YOUR-CLIENT-SECRET
+sent = [Gmail].Sent Mail
+trash = [Gmail].Trash
+save_sent = no
+
+[theme]
+# include = ~/.config/epis/themes/light.theme
+accent = #89b4fa
+radius = 6
+
+[keys]
+# CONTEXT KEYS = COMMAND, contexts: global list message mail compose
+list <leader>i = folder INBOX
+mail A = archive
+global <C-s> = sync
+
+[commands]
+# custom commands, usable with : and in [keys]
+spam = move Junk
+inbox = folder INBOX
+notify = !notify-send "epis" "sync done"
+# feedkeys replays keys, ; separates commands
+toptwo = top; feedkeys jj
+
+[llm]
+# uses the Claude API, the key may also come from ANTHROPIC_API_KEY
+api_key_cmd = pass show api/anthropic
+model = claude-opus-5-5

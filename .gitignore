@@ -2,3 +2,4 @@ epis
 *.o
 gui/*.inc
 gui/xdg-*.[ch]
+.DS_Store

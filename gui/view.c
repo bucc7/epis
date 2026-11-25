@@ -87,7 +87,7 @@ static float rowh(void)
 	return font_lineh(FONT_UI, cfg.font_size) + 8;
 }
 
-static Clay_ElementId wid(const char *base, int leaf, int i)
+Clay_ElementId wid(const char *base, int leaf, int i)
 {
 	return Clay__HashString(cstr(base), leaf * 100000 + i, 0);
 }
@@ -362,8 +362,10 @@ static void text_view(struct win *w, int li)
 				.fontId = FONT_BOLD,
 				.fontSize = cfg.font_size + 3,
 				.textColor = col(C_ACCENT) }));
-		if (w->hdr && w->type == W_MSG)
-			CLAY_TEXT(cstr(w->hdr), txt(FONT_UI, C_DIM, 1));
+		if (w->hlen && w->type == W_MSG)
+			CLAY_TEXT(((Clay_String){ false, (int32_t)w->hlen,
+						  w->doc }),
+				  txt(FONT_UI, C_DIM, 1));
 	}
 	CLAY({ .id = body, .layout = { .sizing = { CLAY_SIZING_GROW(0),
 						   CLAY_SIZING_GROW(0) } },
@@ -374,7 +376,9 @@ static void text_view(struct win *w, int li)
 			.padding = CLAY_PADDING_ALL(cfg.padding * 2),
 			.layoutDirection = CLAY_TOP_TO_BOTTOM } }) {
 			for (i = 0; i < w->nchunks; i++) {
-				CLAY_TEXT(cstr(w->chunks[i].s),
+				CLAY_TEXT(((Clay_String){ false,
+						w->chunks[i].len,
+						w->chunks[i].s }),
 					  txt(FONT_MONO, w->chunks[i].quote ?
 					      C_QUOTE : C_FG, 0));
 				if (w->chunks[i].blank)
@@ -861,6 +865,8 @@ void ui_layout(Clay_RenderCommandArray *out)
 			sz, xmalloc(sz)), (Clay_Dimensions){ lw, lh },
 			(Clay_ErrorHandler){ clay_error, 0 });
 		Clay_SetMeasureTextFunction(measure, NULL);
+		/* every line is needed to place a cursor scrolled away */
+		Clay_SetCullingEnabled(false);
 	}
 	used = 0;
 	app.nhits = 0;
@@ -938,6 +944,7 @@ static void render(Clay_RenderCommandArray *cmds)
 		case CLAY_RENDER_COMMAND_TYPE_TEXT: {
 			Clay_TextRenderData *t = &c->renderData.text;
 
+			sel_highlight(c);
 			font_draw(t->fontId, t->fontSize, b.x, b.y,
 				  t->stringContents.chars,
 				  t->stringContents.length, rgba(t->textColor));
@@ -961,6 +968,12 @@ void draw(void)
 	Clay_RenderCommandArray cmds;
 
 	ui_layout(&cmds);
+	sel_layout(&cmds);
+	/* scroll to the selection cursor, then lay out again */
+	if (sel_follow()) {
+		ui_layout(&cmds);
+		sel_layout(&cmds);
+	}
 	if (r_begin(cfg.color[C_BG]))
 		return;
 	font_flush();
@@ -970,5 +983,6 @@ void draw(void)
 		scene_clear();
 		render(&cmds);
 	}
+	sel_cursor();
 	r_end();
 }

@@ -12,7 +12,7 @@ LIBS = -lresolv $(SYSLIBS_$(UNAME))
 SYSLIBS_Darwin = -liconv
 GEN =
 
-GUI_SRC_1 = gui/ui.c gui/view.c gui/edit.c gui/render.c gui/font.c \
+GUI_SRC_1 = gui/ui.c gui/view.c gui/edit.c gui/select.c gui/render.c gui/font.c \
             gui/clay.c gui/$(WINDOW).c $(BACKEND_$(WINDOW))
 GUI_PKGS_1 = freetype2 $(PKGS_$(WINDOW))
 GUI_GEN_1 = $(GEN_$(WINDOW))
@@ -49,7 +49,8 @@ all: epis
 	$(CC) $(CFLAGS) $(EPIS_CPPFLAGS) -c $< -o $@
 
 $(OBJ): src/epis.h config.mk $(GUI_GEN_$(GUI))
-gui/ui.o gui/view.o gui/edit.o gui/render.o gui/font.o gui/$(WINDOW).o \
+gui/ui.o gui/view.o gui/edit.o gui/select.o gui/render.o gui/font.o \
+gui/$(WINDOW).o \
 $(BACKEND_$(WINDOW):.c=.o): gui/gui.h
 gui/cocoa.o gui/metal.o: gui/objc.h
 
@@ -95,6 +96,7 @@ uninstall:
 
 format:
 	indent -linux -l80 src/*.c src/*.h gui/ui.c gui/view.c gui/edit.c \
+		gui/select.c \
 		gui/render.c gui/font.c gui/vulkan.c gui/metal.c gui/xkb.c \
 		gui/wayland.c gui/x11.c gui/cocoa.c gui/objc.h gui/gui.h
 

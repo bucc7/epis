@@ -65,6 +65,8 @@ static const struct bind defaults[] = {
 	{ "global", "<C-S-c>", "copy" },
 	{ "global", "<C-S-x>", "cut" },
 	{ "global", "<C-S-v>", "paste" },
+	{ "message", "v", "visual" },
+	{ "message", "V", "visual_line" },
 	{ "list", "j", "down" },
 	{ "list", "k", "up" },
 	{ "list", "<Down>", "down" },
@@ -362,10 +364,6 @@ static struct win *win_new(int type)
 
 static void chunks_free(struct win *w)
 {
-	int i;
-
-	for (i = 0; i < w->nchunks; i++)
-		free(w->chunks[i].s);
 	free(w->chunks);
 	w->chunks = NULL;
 	w->nchunks = 0;
@@ -379,10 +377,11 @@ static void win_free(struct win *w)
 	free(w->acc);
 	free(w->folder);
 	free(w->path);
-	free(w->hdr);
 	free(w->title);
 	free(w->reply_path);
 	chunks_free(w);
+	sel_clear(w);
+	free(w->doc);
 	for (i = 0; i < 4; i++)
 		if (w->f[i].b)
 			ed_free(&w->f[i]);
@@ -392,15 +391,33 @@ static void win_free(struct win *w)
 	free(w);
 }
 
-/* split text into runs of quoted and unquoted lines */
-static void set_chunks(struct win *w, const char *text)
+/*
+ * show headers (may be NULL) and a body, split into runs of quoted and
+ * unquoted lines. Both live in one buffer so a selection can span them.
+ */
+static void set_text(struct win *w, const char *hdr, const char *body)
 {
-	const char *p = text;
+	struct buf b = { 0 };
+	const char *p;
+	size_t start;
 
 	chunks_free(w);
+	sel_clear(w);
+	free(w->doc);
+	if (hdr)
+		buf_printf(&b, "%s\n\n", hdr);
+	w->hlen = hdr ? strlen(hdr) : 0;
+	start = b.len;
+	buf_puts(&b, body);
+	/* final line breaks would give the cursor empty lines to land on */
+	while (b.len > start && b.p[b.len - 1] == '\n')
+		b.p[--b.len] = 0;
+	w->doclen = b.len;
+	w->doc = buf_take(&b);
+	p = w->doc + start;
 	while (*p) {
 		const char *s = p;
-		int q = *p == '>';
+		int q = *p == '>', len;
 
 		while (*p) {
 			const char *nl = strchr(p, '\n');
@@ -410,19 +427,14 @@ static void set_chunks(struct win *w, const char *text)
 				break;
 			p = next;
 		}
+		for (len = p - s; len && s[len - 1] == '\n'; len--)
+			;
 		w->chunks = xrealloc(w->chunks, (w->nchunks + 1) *
 				     sizeof(*w->chunks));
-		w->chunks[w->nchunks].len = p - s;
-		while (w->chunks[w->nchunks].len && s[w->chunks[w->nchunks].len
-						       - 1] == '\n')
-			w->chunks[w->nchunks].len--;
-		w->chunks[w->nchunks].blank = *p &&
-		    p - s > w->chunks[w->nchunks].len ?
-		    p - s - w->chunks[w->nchunks].len - 1 : 0;
-		w->chunks[w->nchunks].s = xstrndup(s, w->chunks[w->nchunks].len);
-		w->chunks[w->nchunks].len = strlen(w->chunks[w->nchunks].s);
-		if (!w->chunks[w->nchunks].len)
-			w->chunks[w->nchunks].s[0] = 0;
+		w->chunks[w->nchunks].s = s;
+		w->chunks[w->nchunks].len = len;
+		w->chunks[w->nchunks].blank = *p && p - s > len ?
+		    p - s - len - 1 : 0;
 		w->chunks[w->nchunks++].quote = q;
 	}
 	w->scroll = 0;
@@ -543,12 +555,12 @@ static void msg_show(struct win *w, const char *path)
 			buf_printf(&h, "%s%s: %s", h.len ? "\n" : "", hs[i], v);
 		free(v);
 	}
-	free(w->hdr);
-	w->hdr = buf_take(&h);
 	free(w->title);
 	w->title = msg_header(&m, "Subject");
 	t = msg_text(&m);
-	set_chunks(w, t);
+	buf_add(&h, "", 0);
+	set_text(w, h.p, t);
+	buf_free(&h);
 	free(t);
 	msg_free(&m);
 	f = maildir_flags_parse(path);
@@ -875,7 +887,7 @@ static void job_done(struct job *j, int status)
 
 		w->title = j->title;
 		j->title = NULL;
-		set_chunks(w, out);
+		set_text(w, NULL, out);
 		split('v', w);
 		ui_status(status != 0, status ? "AI request failed" : "");
 		break;
@@ -1063,7 +1075,7 @@ static const char *cmd_names[] = {
 	"toggle_read", "send", "draft", "attach", "next_field", "prev_field",
 	"sidebar", "menubar", "menu", "summarize", "ask", "ai_draft", "reload",
 	"help", "cmdline", "screenshot", "feedkeys", "copy", "cut", "paste",
-	"select_all", NULL
+	"select_all", "visual", "visual_line", NULL
 };
 
 static void find_folder(int kind)
@@ -1305,7 +1317,7 @@ static void help(void)
 		buf_printf(&b, "%-8s %-14s %s\n", binds[i].ctx, binds[i].keys,
 			   binds[i].cmd);
 	w->title = xstrdup("Key bindings");
-	set_chunks(w, b.p);
+	set_text(w, NULL, b.p);
 	buf_free(&b);
 	split('v', w);
 }
@@ -1371,6 +1383,8 @@ static void paste_field(struct editor *e)
 static void clip_command(const char *cmd)
 {
 	struct editor *e = active_field();
+	struct win *w = focused();
+	int text = !e && w && (w->type == W_MSG || w->type == W_TEXT);
 	char *s = NULL;
 	size_t a, b;
 
@@ -1381,11 +1395,16 @@ static void clip_command(const char *cmd)
 		return;
 	}
 	if (!strcmp(cmd, "select_all")) {
-		if (e)
+		if (text) {
+			sel_all(w);
+		} else if (e) {
 			ed_select_all(e);
+		}
 		return;
 	}
-	if (e && ed_selection(e, &a, &b)) {
+	if (text) {
+		s = sel_text(w);
+	} else if (e && ed_selection(e, &a, &b)) {
 		s = xmalloc(b - a + 1);
 		ed_copy(e, a, b, s);
 		if (!strcmp(cmd, "cut"))
@@ -1398,7 +1417,7 @@ static void clip_command(const char *cmd)
 		return;
 	}
 	plat_clip_set(s);
-	ui_status(0, "%s to the clipboard", !strcmp(cmd, "cut") ?
+	ui_status(0, "%s to the clipboard", !strcmp(cmd, "cut") && !text ?
 		  "cut" : "copied");
 	free(s);
 }
@@ -1443,6 +1462,9 @@ void ui_command(const char *line)
 	app.dirty = 1;
 	if (is_clip_command(name)) {
 		clip_command(name);
+	} else if (!strncmp(name, "visual", 6)) {
+		if (w && (w->type == W_MSG || w->type == W_TEXT))
+			sel_begin(w, name[6] ? ED_VLINE : ED_VISUAL);
 	} else if (!strcmp(name, "quit") || !strcmp(name, "qa") ||
 	    !strcmp(name, "q!")) {
 		app.running = 0;
@@ -1822,6 +1844,8 @@ static void key_tok(const char *tok, const char *text)
 		compose_key(w, tok, ev->text);
 		return;
 	}
+	if (w && w->view.b && !app.keys[0] && sel_key(w, tok, ev->text))
+		return;
 	if (!dispatch(win_ctx(w), tok) && !strcmp(tok, "<Esc>"))
 		app.keys[0] = 0;
 }
@@ -1927,6 +1951,8 @@ static void click(int button)
 		break;
 	case H_WIN:
 		app.focus = app.leaves[h->a];
+		if (button == 1 && !had_menu && !app.pick)
+			sel_press(focused(), app.mx, app.my);
 		break;
 	}
 }
@@ -1998,12 +2024,15 @@ static void event(struct event *e)
 		app.my = e->y / app.scale;
 		if (app.menu_open || app.ctx_open)
 			app.dirty = 1;
+		sel_drag(app.mx, app.my);
 		break;
 	case E_BUTTON:
 		app.mx = e->x / app.scale;
 		app.my = e->y / app.scale;
 		if (e->pressed)
 			click(e->button);
+		else
+			sel_release();
 		break;
 	case E_SCROLL:
 		wheel(e->dy);
@@ -2171,6 +2200,8 @@ const char *editor_ctx_mode(int *color)
 	}
 	if (w && w->type == W_COMPOSE)
 		e = &w->f[w->field];
+	else if (w && w->view.b && (w->type == W_MSG || w->type == W_TEXT))
+		e = &w->view;
 	switch (e ? e->mode : ED_NORMAL) {
 	case ED_INSERT:
 		*color = C_MODE_INSERT;

@@ -90,10 +90,14 @@ The leader key is Space by default (`leader` option).
 | `<C-w>v` `<C-w>s` `<C-w>hjkl` `<C-w>q` `<C-w>o` | window management |
 | `<leader>c` `<leader>s` | compose, synchronize |
 | `<leader>a`, `:ask`, `:ai_draft` | summarize, ask, or draft a reply with the LLM |
+| `v` `V`, or drag with the mouse | select text in a message |
+| `y` | copy the selection |
 | `<C-S-c>` `<C-S-x>` `<C-S-v>` | copy, cut, paste, in any mode and field |
 | `:` | command line (`:move Archive`, `:attach FILE`, `:send`, `:w`, `:q`, `:!cmd %f`) |
 
-On macOS, Cmd-C, Cmd-X, Cmd-V and Cmd-A work too. With
+In a message, `v` and `V` start a selection. The usual motions extend it,
+`o` swaps its ends, and `<Esc>` drops it. A selection can span the headers
+and the body. On macOS, Cmd-C, Cmd-X, Cmd-V and Cmd-A work too. With
 `clipboard = yes` (the default), text you yank in the composer goes to the
 system clipboard and `p` pastes what you copied elsewhere. Deleted text
 stays in the editor, so `dd` does not overwrite the clipboard.
@@ -142,7 +146,8 @@ set in `[theme]`, and `include` loads a theme file (see `themes/`).
   inside the window.
 - Dead keys and input methods: no backend composes them.
 - A macOS application bundle (`.app`).
-- Selecting text with the mouse, and the X11/Wayland primary selection.
+- Selecting text with the mouse in the composer (use vim visual mode or
+  select all), and the X11/Wayland primary selection.
 - GSSAPI/Kerberos and NTLM authentication.
 - Fractional scaling on Wayland (integer scale plus the `scale` option) and
   client-side decorations on compositors without xdg-decoration (GNOME).

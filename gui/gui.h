@@ -146,11 +146,27 @@ void ed_paste(struct editor *e, const char *s);
 void ed_select_all(struct editor *e);
 char *ed_clipboard(void);
 
+/* selection in the message view (select.c) */
+struct win;
+void sel_layout(Clay_RenderCommandArray *cmds);
+int sel_follow(void);
+void sel_highlight(Clay_RenderCommand *c);
+void sel_cursor(void);
+void sel_clear(struct win *w);
+void sel_begin(struct win *w, int mode);
+void sel_all(struct win *w);
+int sel_key(struct win *w, const char *tok, const char *text);
+char *sel_text(struct win *w);
+void sel_press(struct win *w, float x, float y);
+void sel_drag(float x, float y);
+void sel_release(void);
+
 /* application (ui.c) */
 enum { W_LIST, W_MSG, W_COMPOSE, W_TEXT, W_WIZARD };
 
+/* a run of quoted or unquoted lines inside the document of a window */
 struct chunk {
-	char *s;
+	const char *s;
 	/* blank counts the empty lines that follow the run */
 	int len, quote, blank;
 };
@@ -161,7 +177,14 @@ struct win {
 	char *acc, *folder;
 	struct msginfo *msgs;
 	int nmsgs, sel, top, vis;
-	char *path, *hdr, *title;
+	char *path, *title;
+	/* the shown text; its first hlen bytes are the message headers */
+	char *doc;
+	size_t doclen, hlen;
+	/* a read-only copy of doc while text is selected in it */
+	struct editor view;
+	int follow;
+	Clay_BoundingBox body;
 	struct chunk *chunks;
 	int nchunks;
 	float scroll, maxscroll;
@@ -248,6 +271,7 @@ Clay_String cstr(const char *s);
 Clay_String fstr(const char *fmt, ...);
 Clay_Color col(int c);
 const char *editor_ctx_mode(int *color);
+Clay_ElementId wid(const char *base, int leaf, int i);
 int wizard_save(void);
 int wizard_detect(void);
 

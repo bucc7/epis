@@ -13,6 +13,8 @@
 #define BLEND_ONE_MINUS_SRC_ALPHA 5
 #define LOAD_CLEAR 2
 #define STORE_STORE 1
+/* one frame buffer on screen and one to draw into; the default is three */
+#define DRAWABLES 2
 #define PRIMITIVE_TRIANGLE 3
 
 struct mtl_origin {
@@ -119,6 +121,7 @@ int r_init(void)
 	mtl.layer = plat_metal_layer();
 	set_id(mtl.layer, "setDevice:", mtl.dev);
 	set_int(mtl.layer, "setPixelFormat:", PIXEL_BGRA8);
+	set_int(mtl.layer, "setMaximumDrawableCount:", DRAWABLES);
 	srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
 	MSG(void, id, SEL, CGColorSpaceRef)(mtl.layer, sel("setColorspace:"),
 					    srgb);
@@ -157,17 +160,19 @@ void r_quit(void)
 	free(scene.b);
 }
 
-/* copy a region of the glyph atlas into the texture */
-void r_atlas(const uint8_t *pix, int w, int h)
+/* copy one glyph bitmap into the atlas texture */
+void r_atlas(int x, int y, int w, int h, const uint8_t *pix, int pitch)
 {
 	struct mtl_region r = { { 0, 0, 0 }, { 0, 0, 1 } };
 
-	r.size.w = w < ATLAS ? w : ATLAS;
-	r.size.h = h < ATLAS ? h : ATLAS;
+	r.origin.x = x;
+	r.origin.y = y;
+	r.size.w = w;
+	r.size.h = h;
 	MSG(void, id, SEL, struct mtl_region, nsuint, const void *, nsuint)(
 		mtl.atlas,
 		sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), r, 0,
-		pix, w);
+		pix, pitch);
 }
 
 /* start a frame, returns -1 when nothing can be drawn */

@@ -466,14 +466,14 @@ void r_quit(void)
 	vkDestroyInstance(vk.inst, NULL);
 }
 
-/* copy a region of the glyph atlas for upload on the next frame */
-void r_atlas(const uint8_t *pix, int w, int h)
+/* copy one glyph bitmap into the staging buffer, uploaded by r_end */
+void r_atlas(int x, int y, int w, int h, const uint8_t *pix, int pitch)
 {
-	int y;
+	uint8_t *dst = (uint8_t *)vk.stage_map + y * ATLAS + x;
+	int i;
 
-	for (y = 0; y < h && y < ATLAS; y++)
-		memcpy((uint8_t *)vk.stage_map + y * ATLAS, pix + y * w,
-		       w < ATLAS ? w : ATLAS);
+	for (i = 0; i < h; i++)
+		memcpy(dst + i * ATLAS, pix + i * pitch, w);
 	vk.atlas_dirty = 1;
 }
 

@@ -54,6 +54,7 @@ void xkb_event(struct event *ev, uint32_t sym);
 #endif
 
 /* renderer: shared batching (render.c), drawing (vulkan.c or metal.c) */
+/* side of the square glyph atlas, which only holds glyphs that were drawn */
 #define ATLAS 2048
 
 /* one instanced quad, laid out as the shaders expect it */
@@ -81,6 +82,7 @@ struct scene {
 extern struct scene scene;
 
 void scene_reset(int w, int h, uint32_t clear);
+void scene_clear(void);
 void scene_unpack(uint32_t col, float *rgba);
 void scene_shot(const uint8_t *pix, int bgr);
 int r_init(void);
@@ -92,7 +94,7 @@ void r_glyph(float x, float y, float w, float h, const float uv[4],
 	     uint32_t col);
 void r_scissor(float x, float y, float w, float h);
 void r_end(void);
-void r_atlas(const uint8_t *pix, int w, int h);
+void r_atlas(int x, int y, int w, int h, const uint8_t *pix, int pitch);
 void r_screenshot(const char *path);
 
 /* fonts (font.c) */
@@ -102,7 +104,7 @@ float font_width(int font, int size, const char *s, int len);
 float font_lineh(int font, int size);
 void font_draw(int font, int size, float x, float y, const char *s, int len,
 	       uint32_t col);
-void font_frame(void);
+int font_flush(void);
 
 /* text editor with vim emulation (edit.c) */
 enum { ED_NORMAL, ED_INSERT, ED_VISUAL, ED_VLINE };

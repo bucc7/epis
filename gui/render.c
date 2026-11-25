@@ -13,6 +13,12 @@ void scene_reset(int w, int h, uint32_t clear)
 	scene.h = h;
 	scene.clear = clear;
 	scene.scale = plat_scale();
+	scene_clear();
+}
+
+/* drop everything queued for the current frame */
+void scene_clear(void)
+{
 	scene.n = scene.nb = 0;
 	r_scissor(0, 0, -1, -1);
 }

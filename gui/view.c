@@ -892,18 +892,13 @@ void ui_layout(Clay_RenderCommandArray *out)
 	}
 }
 
-/* lay out the interface and draw it */
-void draw(void)
+/* queue the render commands of a laid out frame */
+static void render(Clay_RenderCommandArray *cmds)
 {
-	Clay_RenderCommandArray cmds;
 	int i;
 
-	ui_layout(&cmds);
-	if (r_begin(cfg.color[C_BG]))
-		return;
-	font_frame();
-	for (i = 0; i < cmds.length; i++) {
-		Clay_RenderCommand *c = Clay_RenderCommandArray_Get(&cmds, i);
+	for (i = 0; i < cmds->length; i++) {
+		Clay_RenderCommand *c = Clay_RenderCommandArray_Get(cmds, i);
 		Clay_BoundingBox b = c->boundingBox;
 
 		switch (c->commandType) {
@@ -948,6 +943,23 @@ void draw(void)
 		default:
 			break;
 		}
+	}
+}
+
+/* lay out the interface and draw it */
+void draw(void)
+{
+	Clay_RenderCommandArray cmds;
+
+	ui_layout(&cmds);
+	if (r_begin(cfg.color[C_BG]))
+		return;
+	font_flush();
+	render(&cmds);
+	/* the atlas filled up: start over with only what is visible */
+	if (font_flush()) {
+		scene_clear();
+		render(&cmds);
 	}
 	r_end();
 }

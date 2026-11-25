@@ -11,7 +11,7 @@
 
 struct glyph {
 	uint32_t key, cp;
-	int used;
+	char used, packed;
 	short w, h, bx, by;
 	float adv, uv[4];
 };
@@ -19,8 +19,7 @@ struct glyph {
 static FT_Library ft;
 static FT_Face face[3], fallback[8];
 static int nfallback;
-static uint8_t *atlas;
-static int ax, ay, rowh, dirty, overflow;
+static int ax, ay, rowh, full;
 static struct glyph cache[CACHE];
 static float scale = 1;
 
@@ -77,6 +76,13 @@ static const char *fallback_fonts[] = {
 	NULL
 };
 
+/* forget every cached glyph and start filling the atlas again */
+static void reset(void)
+{
+	memset(cache, 0, sizeof(cache));
+	ax = ay = rowh = full = 0;
+}
+
 static FT_Face load(const char *want, const char **list)
 {
 	FT_Face f = NULL;
@@ -100,8 +106,6 @@ int font_init(float s)
 	scale = s;
 	if (!ft && FT_Init_FreeType(&ft))
 		return -1;
-	if (!atlas)
-		atlas = xcalloc(ATLAS, ATLAS);
 	if (!face[FONT_UI]) {
 		face[FONT_UI] = load(cfg.font, ui_fonts);
 		face[FONT_MONO] = load(cfg.font_mono, mono_fonts);
@@ -120,10 +124,7 @@ int font_init(float s)
 		face[FONT_MONO] = face[FONT_UI];
 	if (!face[FONT_BOLD])
 		face[FONT_BOLD] = face[FONT_UI];
-	memset(cache, 0, sizeof(cache));
-	memset(atlas, 0, ATLAS * ATLAS);
-	ax = ay = rowh = 0;
-	dirty = 1;
+	reset();
 	return 0;
 }
 
@@ -133,14 +134,27 @@ static FT_Face sized(FT_Face f, int size)
 	return f;
 }
 
+/* load a glyph from the font, or from the first fallback that has it */
+static FT_GlyphSlot load_glyph(int font, int size, uint32_t cp, int flags)
+{
+	FT_Face f = sized(face[font], size);
+	int i;
+
+	for (i = 0; !FT_Get_Char_Index(f, cp) && i < nfallback; i++)
+		if (FT_Get_Char_Index(fallback[i], cp))
+			f = sized(fallback[i], size);
+	if (FT_Load_Char(f, cp, FT_LOAD_TARGET_LIGHT | flags))
+		return NULL;
+	return f->glyph;
+}
+
+/* cached glyph metrics; the bitmap is only made once the glyph is drawn */
 static struct glyph *glyph(int font, int size, uint32_t cp)
 {
 	uint32_t key = cp * 2654435761u ^ (uint32_t)(font << 24 | size << 12);
 	uint32_t h = key % CACHE, i;
 	struct glyph *g;
-	FT_Face f;
 	FT_GlyphSlot sl;
-	int x, y;
 
 	for (i = 0; i < CACHE; i++) {
 		g = &cache[(h + i) % CACHE];
@@ -149,45 +163,54 @@ static struct glyph *glyph(int font, int size, uint32_t cp)
 		if (g->key == key && g->cp == cp)
 			return g;
 	}
-	if (i == CACHE)
+	if (i == CACHE) {
+		full = 1;
 		return NULL;
-	f = sized(face[font], size);
-	for (x = 0; !FT_Get_Char_Index(f, cp) && x < nfallback; x++)
-		if (FT_Get_Char_Index(fallback[x], cp))
-			f = sized(fallback[x], size);
-	if (FT_Load_Char(f, cp, FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT))
+	}
+	sl = load_glyph(font, size, cp, 0);
+	if (!sl)
 		return NULL;
-	sl = f->glyph;
-	if (ax + (int)sl->bitmap.width + 1 >= ATLAS) {
+	g->used = 1;
+	g->key = key;
+	g->cp = cp;
+	g->adv = sl->advance.x / 64.0f;
+	return g;
+}
+
+/* render a glyph into the atlas; returns -1 if it cannot be drawn */
+static int pack(struct glyph *g, int font, int size)
+{
+	FT_GlyphSlot sl = load_glyph(font, size, g->cp, FT_LOAD_RENDER);
+	int w, h;
+
+	if (!sl)
+		return -1;
+	w = sl->bitmap.width;
+	h = sl->bitmap.rows;
+	if (ax + w + 1 >= ATLAS) {
 		ax = 0;
 		ay += rowh + 1;
 		rowh = 0;
 	}
-	if (ay + (int)sl->bitmap.rows + 1 >= ATLAS) {
-		overflow = 1;
-		return NULL;
+	if (ay + h + 1 >= ATLAS) {
+		full = 1;
+		return -1;
 	}
-	for (y = 0; y < (int)sl->bitmap.rows; y++)
-		for (x = 0; x < (int)sl->bitmap.width; x++)
-			atlas[(ay + y) * ATLAS + ax + x] =
-			    sl->bitmap.buffer[y * sl->bitmap.pitch + x];
-	g->used = 1;
-	g->key = key;
-	g->cp = cp;
-	g->w = sl->bitmap.width;
-	g->h = sl->bitmap.rows;
+	if (w && h)
+		r_atlas(ax, ay, w, h, sl->bitmap.buffer, sl->bitmap.pitch);
+	g->packed = 1;
+	g->w = w;
+	g->h = h;
 	g->bx = sl->bitmap_left;
 	g->by = sl->bitmap_top;
-	g->adv = sl->advance.x / 64.0f;
 	g->uv[0] = (float)ax / ATLAS;
 	g->uv[1] = (float)ay / ATLAS;
-	g->uv[2] = (float)(ax + g->w) / ATLAS;
-	g->uv[3] = (float)(ay + g->h) / ATLAS;
-	ax += g->w + 1;
-	if (g->h > rowh)
-		rowh = g->h;
-	dirty = 1;
-	return g;
+	g->uv[2] = (float)(ax + w) / ATLAS;
+	g->uv[3] = (float)(ay + h) / ATLAS;
+	ax += w + 1;
+	if (h > rowh)
+		rowh = h;
+	return 0;
 }
 
 /* width of a UTF-8 string in logical pixels */
@@ -224,8 +247,12 @@ void font_draw(int font, int size, float x, float y, const char *s, int len,
 	FT_Face f = sized(face[font], size);
 	float px = x * scale, base = y * scale + (f->size->metrics.ascender >>
 						   6);
+	float top = y * scale, bottom = top + (f->size->metrics.height >> 6);
 	int i = 0;
 
+	/* clipped text must not take up room in the atlas */
+	if (bottom < scene.sc.y || top > scene.sc.y + scene.sc.h)
+		return;
 	px = (float)(int)(px + 0.5f);
 	base = (float)(int)(base + 0.5f);
 	while (i < len) {
@@ -240,23 +267,21 @@ void font_draw(int font, int size, float x, float y, const char *s, int len,
 		g = glyph(font, size, cp);
 		if (!g)
 			continue;
-		if (g->w && g->h)
+		if ((g->packed || !pack(g, font, size)) && g->w && g->h)
 			r_glyph(px + g->bx, base - g->by, g->w, g->h, g->uv,
 				col);
 		px += g->adv * (tab ? 4 : 1);
 	}
 }
 
-/* upload new glyphs; called once per frame after the GPU is idle */
-void font_frame(void)
+/*
+ * empty the atlas if it or the glyph cache ran out of room. Returns 1 if
+ * it did, which invalidates the glyphs already queued for this frame.
+ */
+int font_flush(void)
 {
-	if (overflow) {
-		overflow = 0;
-		font_init(scale);
-		app.dirty = 1;
-	}
-	if (dirty) {
-		r_atlas(atlas, ATLAS, ATLAS);
-		dirty = 0;
-	}
+	if (!full)
+		return 0;
+	reset();
+	return 1;
 }

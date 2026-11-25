@@ -76,8 +76,22 @@ move in the message list or scroll a message
 .B <CR> <S-CR>
 open the message in this window or in a new window
 .TP
-.B r R f d a m s u
-reply, reply all, forward, delete, archive, move, flag, toggle read
+.B r R f a m s u
+reply, reply all, forward, archive, move, flag, toggle read
+.TP
+.BR dd ", " 3dd ", " dj ", " dG
+delete this message, several, or up to where a motion goes. In a message,
+.B dd
+deletes it
+.TP
+.BR v " or " V " in the list"
+select messages, then
+.BR d ", " x ", " a ", " s ", " u " or " m
+act on all of them. Counts work with motions and actions, and commands take
+row ranges, as in
+.B :2,8delete
+or
+.B :%archive
 .TP
 .B <C-w>v <C-w>s <C-w>hjkl <C-w>q <C-w>o
 split side by side or stacked, move between, close and keep windows

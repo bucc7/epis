@@ -308,7 +308,10 @@ static int date_cmp(const void *a, const void *b)
 {
 	const struct msginfo *x = a, *y = b;
 
-	return x->date < y->date ? 1 : x->date > y->date ? -1 : 0;
+	if (x->date != y->date)
+		return x->date < y->date ? 1 : -1;
+	/* a fixed order, which renaming a file for its flags keeps */
+	return strcmp(strrchr(x->path, '/'), strrchr(y->path, '/'));
 }
 
 void sort_by_date(struct msginfo *m, int n)

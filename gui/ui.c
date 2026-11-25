@@ -80,6 +80,9 @@ static const struct bind defaults[] = {
 	{ "list", "<CR>", "open" },
 	{ "list", "l", "open" },
 	{ "list", "<S-CR>", "open_split" },
+	{ "list", "d", "delete_motion" },
+	{ "list", "v", "visual" },
+	{ "list", "V", "visual_line" },
 	{ "list", "/", "find_message" },
 	{ "list", "q", "close" },
 	{ "message", "j", "scroll_down" },
@@ -99,7 +102,8 @@ static const struct bind defaults[] = {
 	{ "mail", "r", "reply" },
 	{ "mail", "R", "reply_all" },
 	{ "mail", "f", "forward" },
-	{ "mail", "d", "delete" },
+	/* "dd" here too, so that typing it never deletes twice */
+	{ "message", "dd", "delete" },
 	{ "mail", "a", "archive" },
 	{ "mail", "m", "move" },
 	{ "mail", "s", "flag" },
@@ -442,11 +446,10 @@ static void set_text(struct win *w, const char *hdr, const char *body)
 
 static void list_load(struct win *w, const char *acc, const char *folder)
 {
-	char *keep = w->nmsgs && w->sel < w->nmsgs ?
-	    xstrdup(strrchr(w->msgs[w->sel].path, '/')) : NULL;
+	struct list_mark mark;
 	char *dir;
-	int i;
 
+	list_save(w, &mark);
 	if (acc != w->acc) {
 		free(w->acc);
 		w->acc = xstrdup(acc);
@@ -461,16 +464,7 @@ static void list_load(struct win *w, const char *acc, const char *folder)
 	sort_by_date(w->msgs, w->nmsgs);
 	free(dir);
 	w->has_list = 1;
-	if (keep) {
-		size_t kl = strcspn(keep, ":");
-
-		for (i = 0; i < w->nmsgs; i++)
-			if (!strncmp(strrchr(w->msgs[i].path, '/'), keep, kl))
-				w->sel = i;
-		free(keep);
-	}
-	if (w->sel >= w->nmsgs)
-		w->sel = w->nmsgs ? w->nmsgs - 1 : 0;
+	list_restore(w, &mark);
 	app.dirty = 1;
 }
 
@@ -573,6 +567,7 @@ static void msg_show(struct win *w, const char *path)
 		w->msgs[w->sel].flags |= F_SEEN;
 	}
 	w->type = W_MSG;
+	w->visual = 0;
 	app.dirty = 1;
 }
 
@@ -1075,7 +1070,8 @@ static const char *cmd_names[] = {
 	"toggle_read", "send", "draft", "attach", "next_field", "prev_field",
 	"sidebar", "menubar", "menu", "summarize", "ask", "ai_draft", "reload",
 	"help", "cmdline", "screenshot", "feedkeys", "copy", "cut", "paste",
-	"select_all", "visual", "visual_line", "set", "nohlsearch", NULL
+	"select_all", "visual", "visual_line", "set", "nohlsearch",
+	"delete_motion", NULL
 };
 
 static void find_folder(int kind)
@@ -1154,7 +1150,8 @@ static void open_folder(const char *af)
 		split('v', w);
 	}
 	w->type = W_LIST;
-	w->sel = w->top = 0;
+	w->sel = w->top = w->visual = 0;
+	list_reset();
 	msginfo_free(w->msgs, w->nmsgs);
 	w->msgs = NULL;
 	w->nmsgs = 0;
@@ -1162,21 +1159,117 @@ static void open_folder(const char *af)
 	free(acc);
 }
 
+/* messages waiting for the folder picker to say where they go */
+static char **moving;
+static int nmoving;
+
+static void free_paths(char **v, int n)
+{
+	int i;
+
+	for (i = 0; i < n; i++)
+		free(v[i]);
+	free(v);
+}
+
+/*
+ * the messages a command acts on: the selected rows of a list, or else
+ * the message at the cursor. Their paths are copied, so the same messages
+ * are acted on even if the list changes meanwhile.
+ */
+static int targets(struct win *w, char ***out)
+{
+	int lo, hi, i;
+	char **v;
+
+	*out = NULL;
+	if (w && w->type == W_LIST && w->visual && w->nmsgs) {
+		list_range(w, &lo, &hi);
+		v = xcalloc(hi - lo + 1, sizeof(*v));
+		for (i = lo; i <= hi; i++)
+			v[i - lo] = xstrdup(w->msgs[i].path);
+		*out = v;
+		return hi - lo + 1;
+	}
+	if (!cur_path(w))
+		return 0;
+	v = xcalloc(1, sizeof(*v));
+	v[0] = xstrdup(cur_path(w));
+	*out = v;
+	return 1;
+}
+
+/*
+ * leave visual mode after an action, with the cursor on the first of the
+ * messages. Messages that are only marked stay listed, so skip past them.
+ */
+static void end_selection(struct win *w, int marked)
+{
+	int lo, hi;
+
+	if (!w || w->type != W_LIST)
+		return;
+	list_range(w, &lo, &hi);
+	w->sel = marked && hi + 1 < w->nmsgs ? hi + 1 : lo;
+	w->visual = 0;
+}
+
+/* whether the message at path is already in the maildir dir */
+static int in_folder(const char *path, const char *dir)
+{
+	size_t n = strlen(dir);
+
+	return !strncmp(path, dir, n) && path[n] == '/' &&
+	    strlen(path + n) > 5 && !strchr(path + n + 5, '/');
+}
+
+static void report(const char *did, int done, int failed)
+{
+	if (failed)
+		ui_status(1, "%d of %d messages could not be %s", failed,
+			  done + failed, did);
+	else if (done == 1)
+		ui_status(0, "message %s", did);
+	else if (done)
+		ui_status(0, "%d messages %s", done, did);
+}
+
 static void move_to(const char *af)
 {
 	struct win *w = focused();
-	const char *p = cur_path(w);
 	char *acc = xstrndup(af, strcspn(af, "/"));
-	char *dir = folder_dir(acc, strchr(af, '/') + 1), *np;
+	char *dir = folder_dir(acc, strchr(af, '/') + 1), *np, *did;
+	int i, done = 0, failed = 0;
 
-	np = p ? maildir_move(p, dir) : NULL;
-	ui_status(!np, np ? "moved to %s" : "move failed", af);
-	free(np);
+	for (i = 0; i < nmoving; i++) {
+		if (in_folder(moving[i], dir))
+			continue;
+		np = maildir_move(moving[i], dir);
+		np ? done++ : failed++;
+		free(np);
+	}
+	did = xasprintf("moved to %s", af);
+	report(did, done, failed);
+	free(did);
+	free_paths(moving, nmoving);
+	moving = NULL;
+	nmoving = 0;
 	free(acc);
 	free(dir);
+	end_selection(w, 0);
 	if (w && w->type == W_MSG && w->has_list)
 		w->type = W_LIST;
 	reload_lists(app.root);
+}
+
+/* take note of the messages to move before a destination is chosen */
+static int move_begin(struct win *w)
+{
+	free_paths(moving, nmoving);
+	nmoving = targets(w, &moving);
+	if (!nmoving)
+		ui_status(1, "no message selected");
+	return nmoving;
 }
 
 static void picker_accept(void)
@@ -1202,54 +1295,91 @@ static void picker_accept(void)
 	free(data);
 }
 
-static void msg_flag(int flag, int toggle)
+/*
+ * toggle a flag on the messages: it is set on all of them if any lacks
+ * it, and cleared if they all have it
+ */
+static void msg_flag(int flag)
 {
 	struct win *w = focused();
-	const char *p = cur_path(w);
-	char *np;
-	int f;
+	char **v, *np;
+	int n = targets(w, &v), i, set = 0, failed = 0;
 
-	if (!p)
+	if (!n)
 		return;
-	f = maildir_flags_parse(p);
-	f = toggle && (f & flag) ? f & ~flag : f | flag;
-	np = maildir_set_flags(p, f);
-	if (np && w->type == W_MSG) {
-		free(w->path);
-		w->path = xstrdup(np);
+	for (i = 0; i < n; i++)
+		set |= !(maildir_flags_parse(v[i]) & flag);
+	for (i = 0; i < n; i++) {
+		int f = maildir_flags_parse(v[i]);
+
+		np = maildir_set_flags(v[i], set ? f | flag : f & ~flag);
+		failed += !np;
+		if (np && w->type == W_MSG) {
+			free(w->path);
+			w->path = xstrdup(np);
+		}
+		free(np);
 	}
-	free(np);
+	if (failed)
+		report("changed", n - failed, failed);
+	/* flagging keeps the cursor where it ended */
+	w->visual = 0;
+	free_paths(v, n);
 	reload_lists(app.root);
 }
 
 static void msg_delete(int archive)
 {
 	struct win *w = focused();
-	const char *p = cur_path(w);
 	struct account *a = acc_of(w);
-	char *np = NULL;
+	char **v, *np, *dir, *cur, *trash;
+	int n, i, done = 0, failed = 0, marked = 0, skipped = 0;
 
-	if (!p || !a)
+	if (!a || !(n = targets(w, &v)))
 		return;
-	if (archive) {
-		char *dir = folder_dir(a->name, a->archive);
-		char *cur = xasprintf("%s/cur", dir);
-
-		if (access(cur, F_OK))
-			ui_status(1, "no archive folder '%s'", a->archive);
-		else
-			np = maildir_move(p, dir);
-		free(dir);
-		free(cur);
-	} else {
-		np = maildir_trash(a, p);
+	dir = folder_dir(a->name, archive ? a->archive : a->trash);
+	cur = xasprintf("%s/cur", dir);
+	trash = archive ? NULL : dir;
+	if (archive && access(cur, F_OK)) {
+		ui_status(1, "no archive folder '%s'", a->archive);
+		goto out;
 	}
-	free(np);
+	for (i = 0; i < n; i++) {
+		if (archive && in_folder(v[i], dir)) {
+			skipped++;
+			continue;
+		}
+		np = archive ? maildir_move(v[i], dir) :
+		    maildir_trash(a, v[i]);
+		if (!np) {
+			failed++;
+			continue;
+		}
+		done++;
+		/* still outside the trash: only flagged for removal */
+		if (trash && (!in_folder(np, trash) || in_folder(v[i], trash)))
+			marked++;
+		free(np);
+	}
+	if (skipped == n)
+		ui_status(0, "already archived");
+	else if (archive)
+		report("archived", done, failed);
+	else if (marked && !failed)
+		ui_status(0, "%d marked for permanent deletion at the next "
+			  "sync", marked);
+	else
+		report("moved to the trash", done, failed);
+	end_selection(w, marked);
 	if (w->type == W_MSG && w->has_list)
 		w->type = W_LIST;
 	else if (w->type == W_MSG)
 		close_focus(0);
 	reload_lists(app.root);
+out:
+	free(dir);
+	free(cur);
+	free_paths(v, n);
 }
 
 static void move_sel(struct win *w, int d)
@@ -1451,6 +1581,29 @@ void ui_command(const char *line)
 		free(dup);
 		return;
 	}
+	/* "2,5delete", "%archive" and "'<,'>move Junk" in a list */
+	if (w && w->type == W_LIST &&
+	    (strchr("%.$'+-", *line) || isdigit((unsigned char)*line))) {
+		const char *rest = line;
+		int sel = w->sel, visual = w->visual, anchor = w->anchor;
+		int r = list_command_range(w, &rest);
+
+		if (r)
+			return;
+		line = rest;
+		snprintf(name, sizeof(name), "%.*s",
+			 (int)strcspn(line, " "), line);
+		for (i = 0; i < cfg.nalias; i++)
+			if (!strcmp(name, cfg.alias[i].name))
+				break;
+		if (i == cfg.nalias && !list_is_action(name)) {
+			w->sel = sel;
+			w->visual = visual;
+			w->anchor = anchor;
+			ui_status(1, "%s does not take a range", name);
+			return;
+		}
+	}
 	snprintf(name, sizeof(name), "%.*s", (int)strcspn(line, " "), line);
 	arg = line + strlen(name);
 	while (*arg == ' ')
@@ -1467,7 +1620,12 @@ void ui_command(const char *line)
 	if (is_clip_command(name)) {
 		clip_command(name);
 	} else if (!strncmp(name, "visual", 6)) {
-		if (w && (w->type == W_MSG || w->type == W_TEXT))
+		if (w && w->type == W_LIST) {
+			if (w->visual)
+				w->visual = 0;
+			else
+				list_select(w, w->sel, w->sel);
+		} else if (w && (w->type == W_MSG || w->type == W_TEXT))
 			sel_begin(w, name[6] ? ED_VLINE : ED_VISUAL);
 	} else if (!strcmp(name, "q!") && w && w->type == W_COMPOSE) {
 		close_focus(1);
@@ -1535,7 +1693,8 @@ void ui_command(const char *line)
 			close_focus(0);
 		}
 	} else if (!strcmp(name, "down") || !strcmp(name, "up")) {
-		move_sel(w, name[0] == 'd' ? 1 : -1);
+		move_sel(w, (name[0] == 'd' ? 1 : -1) *
+			 (app.count ? app.count : 1));
 	} else if (!strcmp(name, "next") || !strcmp(name, "prev")) {
 		if (w && w->has_list) {
 			move_sel(w, name[0] == 'n' ? 1 : -1);
@@ -1543,13 +1702,16 @@ void ui_command(const char *line)
 				msg_show(w, w->msgs[w->sel].path);
 		}
 	} else if (!strcmp(name, "top") || !strcmp(name, "bottom")) {
-		if (w && w->type == W_LIST)
+		if (w && w->type == W_LIST && app.count)
+			move_sel(w, app.count - 1 - w->sel);
+		else if (w && w->type == W_LIST)
 			move_sel(w, name[0] == 't' ? -w->nmsgs : w->nmsgs);
 		else if (w)
 			scroll(w, name[0] == 't' ? -1e9f : 1e9f);
 	} else if (!strcmp(name, "pagedown") || !strcmp(name, "pageup")) {
 		if (w && w->type == W_LIST)
-			move_sel(w, name[4] == 'd' ? page : -page);
+			move_sel(w, (name[4] == 'd' ? page : -page) *
+				 (app.count ? app.count : 1));
 		else if (w)
 			scroll(w, (name[4] == 'd' ? 1 : -1) * w->vislines *
 			       0.8f);
@@ -1572,7 +1734,9 @@ void ui_command(const char *line)
 			free(af);
 		}
 	} else if (!strcmp(name, "move")) {
-		if (!arg) {
+		if (!move_begin(w)) {
+			return;
+		} else if (!arg) {
 			find_folder(PK_MOVE);
 		} else {
 			char *af = strchr(arg, '/') ? xstrdup(arg) :
@@ -1592,14 +1756,14 @@ void ui_command(const char *line)
 		reply(2);
 	} else if (!strcmp(name, "forward")) {
 		reply(3);
-	} else if (!strcmp(name, "delete")) {
+	} else if (!strcmp(name, "delete") || !strcmp(name, "d")) {
 		msg_delete(0);
 	} else if (!strcmp(name, "archive")) {
 		msg_delete(1);
 	} else if (!strcmp(name, "flag")) {
-		msg_flag(F_FLAGGED, 1);
+		msg_flag(F_FLAGGED);
 	} else if (!strcmp(name, "toggle_read")) {
-		msg_flag(F_SEEN, 1);
+		msg_flag(F_SEEN);
 	} else if (!strcmp(name, "send") || !strcmp(name, "wq") ||
 		   !strcmp(name, "x")) {
 		send_compose(0);
@@ -1644,9 +1808,14 @@ void ui_command(const char *line)
 		free(p);
 	} else if (!strcmp(name, "feedkeys") && arg) {
 		feedkeys(arg);
+	} else if (!strcmp(name, "delete_motion")) {
+		/* only meaningful as a key, where a motion can follow */
+		ui_status(1, "delete_motion works as a key in a list");
 	} else if (!strcmp(name, "cmdline")) {
 		app.cmdline = 1;
-		ed_set(&app.cmd, "");
+		/* as in vim, a command typed over a selection acts on it */
+		ed_set(&app.cmd, w && w->type == W_LIST && w->visual ?
+		       "'<,'>" : "");
 	} else {
 		ui_status(1, "unknown command: %s", name);
 	}
@@ -1685,8 +1854,12 @@ static int dispatch(const char *ctx, const char *tok)
 	app.keys[0] = 0;
 	if (m == 2) {
 		char *c = xstrdup(cmd);
+		struct win *w = focused();
 
-		ui_command(c);
+		if (w && w->type == W_LIST)
+			list_run(w, c);
+		else
+			ui_command(c);
 		free(c);
 		return 1;
 	}
@@ -1938,6 +2111,16 @@ static void key_tok(const char *tok, const char *text)
 	}
 	if (w && w->view.b && !app.keys[0] && sel_key(w, tok, ev->text))
 		return;
+	if (w && w->type == W_LIST) {
+		const char *cmd = NULL;
+
+		if (list_key(w, tok, bind_match(win_ctx(w), tok, &cmd) != 0))
+			return;
+		/* an unbound key cancels what was being typed */
+		if (!dispatch(win_ctx(w), tok))
+			list_reset();
+		return;
+	}
 	if (!dispatch(win_ctx(w), tok) && !strcmp(tok, "<Esc>"))
 		app.keys[0] = 0;
 }
@@ -1978,6 +2161,7 @@ static void click(int button)
 	wh = hit_kind_at(app.mx, app.my, H_WIN);
 	if (!h)
 		return;
+	list_reset();
 	app.dirty = 1;
 	if (h->kind != H_MENU)
 		app.menu_open = 0;
@@ -2028,11 +2212,19 @@ static void click(int button)
 		else if (h->a == 3)
 			ui_command("draft");
 		break;
-	case H_ROW:
+	case H_ROW: {
+		int lo, hi;
+
 		if (had_menu && button == 1)
 			break;
 		app.focus = app.leaves[h->a];
-		focused()->sel = h->b;
+		list_range(focused(), &lo, &hi);
+		/* the context menu of a selection acts on all of it */
+		if (!(button == 3 && focused()->visual && h->b >= lo &&
+		      h->b <= hi)) {
+			focused()->visual = 0;
+			focused()->sel = h->b;
+		}
 		if (button == 3) {
 			app.ctx_open = 1;
 			app.ctx_x = app.mx;
@@ -2041,6 +2233,7 @@ static void click(int button)
 			ui_command("open");
 		}
 		break;
+	}
 	case H_WIN:
 		app.focus = app.leaves[h->a];
 		if (button == 1 && !had_menu && !app.pick)
@@ -2094,6 +2287,7 @@ static void menu_command(const char *cmd)
 		return;
 	}
 	picker_close();
+	list_reset();
 	app.cmdline = app.ctx_open = 0;
 	app.keys[0] = 0;
 	ui_command(cmd);
@@ -2317,6 +2511,10 @@ const char *editor_ctx_mode(int *color)
 	if (prompt) {
 		*color = C_MODE_FIND;
 		return "SEARCH";
+	}
+	if (w && w->type == W_LIST && w->visual) {
+		*color = C_MODE_VISUAL;
+		return "VISUAL";
 	}
 	/* without vim keys a composer is always inserting */
 	if (!e && w && w->type == W_COMPOSE)

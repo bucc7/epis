@@ -355,7 +355,7 @@ static void list_view(struct win *w, int li, int focus)
 	Clay_ElementId rows = wid("rows", li, 0);
 	float rh = rowh(), h = elem_h(rows), rw = elem_w(rows);
 	float datew = font_width(FONT_UI, cfg.font_size, "00 Mmm 0000", 11);
-	int i, unread = 0;
+	int i, unread = 0, lo, hi;
 
 	w->vis = h > 0 ? (int)(h / rh) : 20;
 	if (w->vis < 1)
@@ -388,12 +388,16 @@ static void list_view(struct win *w, int li, int focus)
 						      "<leader>s to sync."),
 					  txt(FONT_UI, C_DIM, 2));
 			}
+		list_range(w, &lo, &hi);
 		for (i = w->top; i < w->nmsgs && i < w->top + w->vis; i++) {
 			struct msginfo *m = &w->msgs[i];
 			Clay_ElementId id = wid("row", li, i);
-			int sel = i == w->sel, un = !(m->flags & F_SEEN);
-			int fg = sel && focus ? C_SEL_FG : un ? C_UNREAD :
-			    C_FG;
+			int cursor = i == w->sel, un = !(m->flags & F_SEEN);
+			int sel = i >= lo && i <= hi;
+			/* messages that the next sync removes are dimmed */
+			int fg = sel && focus ? C_SEL_FG :
+			    m->flags & F_TRASHED ? C_DIM :
+			    un ? C_UNREAD : C_FG;
 			int font = un ? FONT_BOLD : FONT_UI;
 			char date[32], *from = addr_display(m->from);
 			time_t now = time(NULL);
@@ -409,7 +413,10 @@ static void list_view(struct win *w, int li, int focus)
 				.childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
 			       .backgroundColor = sel ? (focus ? col(C_SEL_BG)
 							 : col(C_BORDER)) :
-			       (Clay_Color){ 0 } }) {
+			       (Clay_Color){ 0 },
+			       /* the cursor end of a selection */
+			       .border = { col(C_CURSOR), { .left =
+					w->visual && cursor ? 4 : 0 } } }) {
 				CLAY({ .layout = { .sizing = {
 					CLAY_SIZING_FIXED(28),
 					CLAY_SIZING_FIXED(10) },
@@ -791,6 +798,17 @@ static void statusbar(void)
 		if (e && !prompt && *ed_showcmd(e))
 			CLAY_TEXT(fstr("%s", ed_showcmd(e)),
 				  txt(FONT_MONO, C_FLAGGED, 2));
+		if (w && w->type == W_LIST && !app.pick) {
+			int lo, hi;
+
+			if (*list_showcmd(w))
+				CLAY_TEXT(fstr("%s", list_showcmd(w)),
+					  txt(FONT_MONO, C_FLAGGED, 2));
+			list_range(w, &lo, &hi);
+			if (w->visual)
+				CLAY_TEXT(fstr("%d selected", hi - lo + 1),
+					  txt(FONT_BOLD, C_FLAGGED, 2));
+		}
 		CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
 					       CLAY_SIZING_FIT(0) } } }) {
 			if (app.cmdline) {

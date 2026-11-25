@@ -86,7 +86,9 @@ The leader key is Space by default (`leader` option).
 | `<CR>`, click | open in the current window |
 | `<S-CR>`, right click | open in a new window / context menu |
 | `r` `R` `f` | reply, reply all, forward |
-| `d` `a` `m` `s` `u` | delete, archive, move, flag, toggle read |
+| `dd` | delete (in the list and in a message) |
+| `a` `m` `s` `u` | archive, move, flag, toggle read |
+| `v` `V` in the list | select several messages |
 | `<C-w>v` `<C-w>s` `<C-w>hjkl` `<C-w>q` `<C-w>o` | window management |
 | `<leader>c` `<leader>s` | compose, synchronize |
 | `<leader>a`, `:ask`, `:ai_draft` | summarize, ask, or draft a reply with the LLM |
@@ -94,6 +96,38 @@ The leader key is Space by default (`leader` option).
 | `y` | copy the selection |
 | `<C-S-c>` `<C-S-x>` `<C-S-v>` | copy, cut, paste, in any mode and field |
 | `:` | command line (`:move Archive`, `:attach FILE`, `:send`, `:w`, `:q`, `:!cmd %f`) |
+
+### Managing messages
+
+The message list takes counts, a delete operator and a visual mode.
+
+| keys | effect |
+| --- | --- |
+| `5j` `12G` | move five rows, go to row twelve |
+| `dd` `3dd` | delete this message, or three from here |
+| `dj` `dk` `d2j` `dG` `dgg` `d5G` | delete from here to where the motion goes |
+| `3a` `3s` `3u` `3m` | archive, flag, toggle read or move three messages |
+| `v` or `V` | select; extend with any list motion, `o` swaps ends |
+| `d` `x` `a` `s` `u` `m` | act on the selection |
+| `<Esc>` | drop the selection, a count or a waiting `d` |
+| `:2,8delete` `:%archive` `:.,$move Junk` | act on a range of rows |
+
+Typing `:` over a selection starts the command with `'<,'>`, and your own
+commands and key bindings act on the selection too. Flagging or toggling a
+mixed selection sets it on all of them first. Right-click inside a
+selection to use the menu on all of it.
+
+Delete moves messages to the trash folder. Inside the trash, or without a
+trash folder, it only marks them; they are shown dimmed and the next sync
+removes them for good. There is no undo in the list, and a sync applies
+deletions and moves to the server.
+
+If mail arrives while you are selecting and the selection would then cover
+different messages, it is cleared. A sync or other background command that
+finishes also cancels a half typed command such as `d`.
+
+In `[keys]`, `delete_motion` is the command behind the `d` of `dd`. To go
+back to deleting with one key, bind `mail d = delete`.
 
 In a message, `v` and `V` start a selection. The usual motions extend it,
 `o` swaps its ends, and `<Esc>` drops it. A selection can span the headers

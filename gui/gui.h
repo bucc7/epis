@@ -124,6 +124,24 @@ void sel_press(struct win *w, float x, float y);
 void sel_drag(float x, float y);
 void sel_release(void);
 
+/* counts, operators and visual mode in the message list (list.c) */
+struct list_mark {
+	char *cursor, *anchor, **selected;
+	int n;
+};
+
+void list_reset(void);
+const char *list_showcmd(struct win *w);
+void list_range(const struct win *w, int *lo, int *hi);
+void list_select(struct win *w, int anchor, int cursor);
+int list_same(const char *a, const char *b);
+void list_save(const struct win *w, struct list_mark *m);
+void list_restore(struct win *w, struct list_mark *m);
+int list_is_action(const char *cmd);
+void list_run(struct win *w, const char *cmd);
+int list_key(struct win *w, const char *tok, int bound);
+int list_command_range(struct win *w, const char **line);
+
 /* application (ui.c) */
 enum { W_LIST, W_MSG, W_COMPOSE, W_TEXT, W_WIZARD };
 
@@ -140,6 +158,8 @@ struct win {
 	char *acc, *folder;
 	struct msginfo *msgs;
 	int nmsgs, sel, top, vis;
+	/* visual mode in the list: the rows from anchor to sel */
+	int visual, anchor;
 	char *path, *title;
 	/* the shown text; its first hlen bytes are the message headers */
 	char *doc;
@@ -217,6 +237,8 @@ struct app {
 	int nleaves;
 	float scale;
 	int native_menu;
+	/* the count typed before the list command that is running */
+	int count;
 };
 
 extern struct app app;

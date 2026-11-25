@@ -14,7 +14,7 @@ const char *color_names[C_COUNT] = {
 	"unread", "dim", "menu_bg", "menu_fg", "status_bg", "status_fg",
 	"error", "flagged", "quote", "cursor", "mode_normal", "mode_insert",
 	"mode_visual", "mode_vline", "mode_command", "mode_find",
-	"mode_setup"
+	"mode_setup", "mode_replace", "mode_vblock", "search"
 };
 
 static const uint32_t default_colors[C_COUNT] = {
@@ -23,7 +23,8 @@ static const uint32_t default_colors[C_COUNT] = {
 	0xcdd6f4ff, 0x313244ff, 0xcdd6f4ff, 0xf38ba8ff, 0xfab387ff,
 	0xa6e3a1ff, 0xf5e0dcff,
 	/* modes; 0 follows another colour, see color_fallbacks() */
-	0, 0xa6e3a1ff, 0xcba6f7ff, 0, 0xfab387ff, 0x94e2d5ff, 0
+	0, 0xa6e3a1ff, 0xcba6f7ff, 0, 0xfab387ff, 0x94e2d5ff, 0,
+	0xf38ba8ff, 0, 0xf9e2afff
 };
 
 static const char *auth_names[] = {
@@ -200,6 +201,14 @@ static void general_set(const char *k, const char *v, const char *file,
 		cfg.vim_edit = boolval(v);
 	} else if (!strcmp(k, "menubar")) {
 		cfg.menubar = boolval(v);
+	} else if (!strcmp(k, "number")) {
+		cfg.number = boolval(v);
+	} else if (!strcmp(k, "relativenumber")) {
+		cfg.relativenumber = boolval(v);
+	} else if (!strcmp(k, "textwidth")) {
+		cfg.textwidth = atoi(v);
+	} else if (!strcmp(k, "hlsearch")) {
+		cfg.hlsearch = boolval(v);
 	} else if (!strcmp(k, "clipboard")) {
 		cfg.clipboard = boolval(v);
 	} else if (!strcmp(k, "leader")) {
@@ -356,7 +365,7 @@ static void color_fallbacks(void)
 {
 	static const int follow[][2] = {
 		{ C_MODE_NORMAL, C_ACCENT }, { C_MODE_VLINE, C_MODE_VISUAL },
-		{ C_MODE_SETUP, C_ACCENT }
+		{ C_MODE_SETUP, C_ACCENT }, { C_MODE_VBLOCK, C_MODE_VISUAL }
 	};
 	size_t i;
 
@@ -378,6 +387,8 @@ int config_load(const char *path)
 	cfg.vim_edit = 1;
 	cfg.menubar = 1;
 	cfg.clipboard = 1;
+	cfg.textwidth = 72;
+	cfg.hlsearch = 1;
 	cfg.leader = xstrdup("<Space>");
 	cfg.llm_url = xstrdup("https://api.anthropic.com/v1/messages");
 	cfg.llm_model = xstrdup("claude-opus-5-5");

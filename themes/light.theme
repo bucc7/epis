@@ -22,3 +22,5 @@ mode_insert = #40a02b
 mode_visual = #8839ef
 mode_command = #fe640b
 mode_find = #179299
+mode_replace = #d20f39
+search = #df8e1d

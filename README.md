@@ -103,13 +103,52 @@ system clipboard and `p` pastes what you copied elsewhere. Deleted text
 stays in the editor, so `dd` does not overwrite the clipboard.
 
 The mode name in the status bar has a colour for each mode, set by the
-`mode_normal`, `mode_insert`, `mode_visual`, `mode_vline`, `mode_command`,
-`mode_find` and `mode_setup` theme keys. If unset, normal and setup follow
-`accent` and `mode_vline` follows `mode_visual`.
+`mode_normal`, `mode_insert`, `mode_replace`, `mode_visual`, `mode_vline`,
+`mode_vblock`, `mode_command`, `mode_find` and `mode_setup` theme keys. If
+unset, normal and setup follow `accent`, and `mode_vline` and `mode_vblock`
+follow `mode_visual`. `search` colours search matches.
 
-The composer uses vim keys by default (`vim_edit = no` turns them off). It
-supports motions, counts, operators (`d`, `c`, `y`) with motions, visual
-mode, `p`, `u`, `r`, `J`, `o`, and `ZZ` or `:send` to send.
+### The editor
+
+The composer uses vim keys by default (`vim_edit = no` turns them off). The
+engine is epis's own and was checked against Neovim, with classic Vim
+defaults (`Y` yanks a line, `startofline`, `nojoinspaces`).
+
+| area | supported |
+| --- | --- |
+| modes | normal, insert, replace, visual (`v` `V` `<C-v>`), command line, search |
+| motions | `hjkl` `w b e ge` `W B E gE` `0 ^ $ g_ \|` `gg G H M L` `f F t T ; ,` `% { } ( )` `+ - _` `gj gk g0 g$`, counts and `N%` |
+| operators | `d c y > < gu gU g~ gq gw`, doubled for lines, with any motion or text object |
+| text objects | `iw aw iW aW is as ip ap`, quotes, `() [] {} <>` (`b`, `B`) |
+| editing | `x X s S r R D C Y J gJ p P gp gP o O i I a A gI ~ <C-a> <C-x>` |
+| visual | all operators, `o`, `r`, `J`, `p`, `gv`, block `I A c d y p r > <` |
+| repeat | `.`, unlimited `u` and `<C-r>` |
+| macros | `q{reg}`, `@{reg}`, `@@`, `@:`, counts; recursive macros stop at the first failing command |
+| registers | `"a`-`"z` (`"A` appends), `"0`-`"9`, `"-`, `"_`, `"+`, `"*`, `"/` |
+| marks | `m{a-z}`, `'` and `` ` `` jumps, `'<` `'>` and `''` |
+| search | `/ ? n N * # g* g#` with Vim-style patterns, smart case, highlighting |
+| insert mode | `<C-w> <C-u> <C-r>{reg} <C-o> <C-t> <C-d>`, arrows |
+| scrolling | `<C-d> <C-u> <C-f> <C-b> <C-e> <C-y> zz zt zb` |
+| commands | ranges with `:s` `:&` `:g` `:v` `:normal` `:d` `:y` `:pu` `:j` `:m` `:t` `:>` `:<` `:sort` `:set` `:noh` and line numbers |
+
+Other `:` commands are epis commands, so `:w` saves a draft, `:x` or `ZZ`
+sends, `:q!` discards the message and `:attach` adds a file. `gq` refills
+paragraphs to `textwidth` (72) and keeps each quoting level apart.
+
+Long lines wrap on screen. Set `number = yes` and `relativenumber = yes` for
+line numbers; with both, the current line shows its own number and the
+others their distance from it. `:set nu`, `:set rnu` and their `no` forms
+change them while epis runs.
+
+A few things differ from Vim. Marks follow the text when it is edited.
+Search patterns are translated to POSIX regular expressions, so `\{-}`,
+look-around and patterns spanning lines do not work. A macro stops if
+another window takes the focus, so its remaining keys cannot act on mail.
+Not implemented: folds, the jump and change lists (`<C-o>`, `<C-i>`, `g;`),
+completion, tag text objects, `=`, `:s` with the `c` flag, and Vim script.
+
+In a message, the same motions, text objects and searches work while text
+is selected.
 
 You can rebind every key in `[keys]` and define your own commands in
 `[commands]`. A command can chain others with `;`, run a shell command with
@@ -121,6 +160,8 @@ set in `[theme]`, and `include` loads a theme file (see `themes/`).
 - **Redraws:** the UI is not drawn in immediate mode. epis redraws only on
   input, resize or when a background job finishes, and sleeps in `poll(2)`
   otherwise. It uses no CPU while idle.
+- **Undo:** the editor logs each change instead of copying the text, so
+  undo is unlimited and costs memory only for what changed.
 - **Text buffer:** the editor uses a gap buffer. In a benchmark of 400,000
   typing and deleting edits in bursts at random positions in a ~500 KB
   document, the gap buffer took 0.02 s and 0.8 MB. An array-backed piece

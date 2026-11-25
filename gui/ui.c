@@ -1075,7 +1075,7 @@ static const char *cmd_names[] = {
 	"toggle_read", "send", "draft", "attach", "next_field", "prev_field",
 	"sidebar", "menubar", "menu", "summarize", "ask", "ai_draft", "reload",
 	"help", "cmdline", "screenshot", "feedkeys", "copy", "cut", "paste",
-	"select_all", "visual", "visual_line", NULL
+	"select_all", "visual", "visual_line", "set", "nohlsearch", NULL
 };
 
 static void find_folder(int kind)
@@ -1335,6 +1335,8 @@ static void scroll(struct win *w, float dy)
 
 static void feedkeys(const char *keys);
 
+static void show_vim_message(void);
+
 static int is_clip_command(const char *c)
 {
 	return !strcmp(c, "copy") || !strcmp(c, "cut") ||
@@ -1386,7 +1388,6 @@ static void clip_command(const char *cmd)
 	struct win *w = focused();
 	int text = !e && w && (w->type == W_MSG || w->type == W_TEXT);
 	char *s = NULL;
-	size_t a, b;
 
 	app.dirty = 1;
 	if (!strcmp(cmd, "paste")) {
@@ -1404,13 +1405,16 @@ static void clip_command(const char *cmd)
 	}
 	if (text) {
 		s = sel_text(w);
-	} else if (e && ed_selection(e, &a, &b)) {
-		s = xmalloc(b - a + 1);
-		ed_copy(e, a, b, s);
+	} else if (e && (s = ed_selected_text(e))) {
+		int typing = e->typeover;
+
 		if (!strcmp(cmd, "cut"))
-			ed_remove(e, a, b);
-		e->mode = e->replace ? ED_INSERT : ED_NORMAL;
-		e->replace = 0;
+			ed_cut_selection(e);
+		else
+			e->mode = ED_NORMAL;
+		if (typing)
+			e->mode = ED_INSERT;
+		e->typeover = 0;
 	}
 	if (!s) {
 		ui_status(1, "nothing selected");
@@ -1465,8 +1469,17 @@ void ui_command(const char *line)
 	} else if (!strncmp(name, "visual", 6)) {
 		if (w && (w->type == W_MSG || w->type == W_TEXT))
 			sel_begin(w, name[6] ? ED_VLINE : ED_VISUAL);
+	} else if (!strcmp(name, "q!") && w && w->type == W_COMPOSE) {
+		close_focus(1);
+	} else if (!strcmp(name, "set") || !strncmp(name, "noh", 3)) {
+		struct editor tmp;
+
+		ed_init(&tmp, "", 0);
+		ed_command(&tmp, line);
+		ed_free(&tmp);
+		show_vim_message();
 	} else if (!strcmp(name, "quit") || !strcmp(name, "qa") ||
-	    !strcmp(name, "q!")) {
+		   !strcmp(name, "q!")) {
 		app.running = 0;
 	} else if (!strcmp(name, "q") || !strcmp(name, "close")) {
 		close_focus(!strcmp(name, "q"));
@@ -1598,6 +1611,7 @@ void ui_command(const char *line)
 		if (w && w->type == W_COMPOSE) {
 			w->field = (w->field + (name[0] == 'n' ? 1 : 3)) % 4;
 			w->f[w->field].mode = ED_INSERT;
+			w->f[w->field].pend.n = 0;
 		}
 	} else if (!strcmp(name, "sidebar")) {
 		app.sidebar = !app.sidebar;
@@ -1679,23 +1693,61 @@ static int dispatch(const char *ctx, const char *tok)
 	return 0;
 }
 
+static void show_vim_message(void)
+{
+	int error;
+	const char *msg = vim_message(&error);
+
+	if (msg)
+		ui_status(error, "%s", msg);
+}
+
+/* feed a key to a composer field and act on what the editor asks for */
+static void editor_key(struct editor *e, const char *tok, const char *text)
+{
+	int r;
+
+	app.status[0] = 0;
+	r = ed_key(e, tok, text, cfg.vim_edit);
+	show_vim_message();
+	if (r == ED_ENTER) {
+		ui_command("next_field");
+	} else if (r == ED_EX) {
+		/* may close the window that holds e */
+		char *line = xstrdup(vim_command());
+
+		ui_command(line);
+		free(line);
+	}
+}
+
 /* feed the pending sequence and tok to the compose editor */
 static void compose_key(struct win *w, const char *tok, const char *text)
 {
 	struct editor *e = &w->f[w->field];
+	const char *cmd = NULL;
 	char pend[64], *p;
+	int inserting = e->mode == ED_INSERT || e->mode == ED_REPLACE;
 
-	if (e->mode == ED_INSERT || !cfg.vim_edit || e->replace) {
-		if (!strcmp(tok, "<Tab>") || !strcmp(tok, "<S-Tab>")) {
-			if (w->field < 3 || !cfg.vim_edit) {
-				ui_command(tok[1] == 'S' ? "prev_field" :
-					   "next_field");
-				return;
-			}
+	app.dirty = 1;
+	if (inserting || !cfg.vim_edit || e->typeover) {
+		if ((!strcmp(tok, "<Tab>") || !strcmp(tok, "<S-Tab>")) &&
+		    (w->field < 3 || !cfg.vim_edit)) {
+			ui_command(tok[1] == 'S' ? "prev_field" :
+				   "next_field");
+			return;
 		}
-		if (ed_key(e, tok, text, cfg.vim_edit) == ED_ENTER)
-			ui_command("next_field");
-		app.dirty = 1;
+		editor_key(e, tok, text);
+		return;
+	}
+	/*
+	 * an unfinished command takes every key, so that "f " or "r:" are
+	 * not read as bindings, and ":" is the editor's own command line
+	 */
+	if (ed_pending(e) || (!app.keys[0] &&
+			      bind_match(win_ctx(w), tok, &cmd) == 2 &&
+			      !strcmp(cmd, "cmdline"))) {
+		editor_key(e, tok, text);
 		return;
 	}
 	if (dispatch(win_ctx(w), tok))
@@ -1708,12 +1760,10 @@ static void compose_key(struct win *w, const char *tok, const char *text)
 			'>') - p + 1) : 1;
 
 		snprintf(t, sizeof(t), "%.*s", (int)l, p);
-		ed_key(e, t, t, 1);
+		ed_key(e, t, NULL, 1);
 		p += l;
 	}
-	if (ed_key(e, tok, text, 1) == ED_ENTER)
-		ui_command("next_field");
-	app.dirty = 1;
+	editor_key(e, tok, text);
 }
 
 static void wizard_key(const char *tok, const char *text)
@@ -1743,13 +1793,55 @@ static void wizard_key(const char *tok, const char *text)
 
 static void key_tok(const char *tok, const char *text);
 
+/* the text a replayed key would have typed */
+static const char *token_text(const char *t)
+{
+	if (!strcmp(t, "<Space>"))
+		return " ";
+	if (!strcmp(t, "<lt>"))
+		return "<";
+	return t[0] != '<' || !t[1] ? t : "";
+}
+
+/*
+ * handle a typed key: record it for a macro, then type whatever a macro
+ * asked for. A macro stops when another window takes the focus, so that
+ * its remaining keys never act on mail.
+ */
+static void key_input(const char *tok, const char *text)
+{
+	struct win *w;
+	char next[KEYLEN];
+
+	if (vim_recording()) {
+		vim_record(tok);
+		/* outside the composer "q" has no editor to stop it */
+		w = focused();
+		if (!strcmp(tok, "q") && !app.pick && !app.cmdline && w &&
+		    w->type != W_COMPOSE) {
+			vim_stop_recording();
+			app.dirty = 1;
+			return;
+		}
+	}
+	key_tok(tok, text);
+	w = focused();
+	while (vim_next(next)) {
+		if (focused() != w || !w || w->type != W_COMPOSE) {
+			vim_abort();
+			break;
+		}
+		key_tok(next, token_text(next));
+	}
+}
+
 static void key(struct event *ev)
 {
 	char tok[32];
 
 	key_token(ev, tok, sizeof(tok));
 	if (tok[0])
-		key_tok(tok, ev->text);
+		key_input(tok, ev->text);
 }
 
 /* replay a key sequence written in binding notation, as vim's feedkeys */
@@ -1982,9 +2074,7 @@ static void wheel(float dy)
 			w->top = 0;
 		app.dirty = 1;
 	} else if (w->type == W_COMPOSE) {
-		w->f[3].top += dy > 0 ? 3 : -3;
-		if (w->f[3].top < 0)
-			w->f[3].top = 0;
+		ed_scroll(&w->f[3], dy > 0 ? 3 : -3);
 		app.dirty = 1;
 	} else {
 		scroll(w, dy * 3);
@@ -2180,11 +2270,37 @@ void hit_add(Clay_ElementId id, int kind, int a, int b)
 	app.hits[app.nhits++].b = b;
 }
 
+/* the editor that has the keyboard in vim terms, or NULL */
+struct editor *ui_vim_editor(void)
+{
+	struct win *w = focused();
+
+	if (app.wizard || app.pick || app.cmdline || !w)
+		return NULL;
+	if (w->type == W_COMPOSE)
+		return cfg.vim_edit ? &w->f[w->field] : NULL;
+	return w->view.b && (w->type == W_MSG || w->type == W_TEXT) ?
+	    &w->view : NULL;
+}
+
 /* name of the current mode; *color gets the index of its theme colour */
 const char *editor_ctx_mode(int *color)
 {
+	static const struct {
+		const char *name;
+		int color;
+	} modes[] = {
+		[ED_NORMAL] = { "NORMAL", C_MODE_NORMAL },
+		[ED_INSERT] = { "INSERT", C_MODE_INSERT },
+		[ED_VISUAL] = { "VISUAL", C_MODE_VISUAL },
+		[ED_VLINE] = { "V-LINE", C_MODE_VLINE },
+		[ED_VBLOCK] = { "V-BLOCK", C_MODE_VBLOCK },
+		[ED_REPLACE] = { "REPLACE", C_MODE_REPLACE },
+	};
+	struct editor *e = ui_vim_editor();
 	struct win *w = focused();
-	struct editor *e = NULL;
+	const char *prompt = e ? ed_prompt(e) : NULL;
+	int mode;
 
 	if (app.wizard) {
 		*color = C_MODE_SETUP;
@@ -2194,27 +2310,21 @@ const char *editor_ctx_mode(int *color)
 		*color = C_MODE_FIND;
 		return "FIND";
 	}
-	if (app.cmdline) {
+	if (app.cmdline || (prompt && *prompt == ':')) {
 		*color = C_MODE_COMMAND;
 		return "COMMAND";
 	}
-	if (w && w->type == W_COMPOSE)
-		e = &w->f[w->field];
-	else if (w && w->view.b && (w->type == W_MSG || w->type == W_TEXT))
-		e = &w->view;
-	switch (e ? e->mode : ED_NORMAL) {
-	case ED_INSERT:
-		*color = C_MODE_INSERT;
-		return "INSERT";
-	case ED_VISUAL:
-		*color = C_MODE_VISUAL;
-		return "VISUAL";
-	case ED_VLINE:
-		*color = C_MODE_VLINE;
-		return "V-LINE";
+	if (prompt) {
+		*color = C_MODE_FIND;
+		return "SEARCH";
 	}
-	*color = C_MODE_NORMAL;
-	return "NORMAL";
+	/* without vim keys a composer is always inserting */
+	if (!e && w && w->type == W_COMPOSE)
+		mode = w->f[w->field].mode;
+	else
+		mode = e ? e->mode : ED_NORMAL;
+	*color = modes[mode].color;
+	return modes[mode].name;
 }
 
 static void on_signal(int s)

@@ -7,6 +7,7 @@
 #endif
 
 #include "clay.h"
+#include "editor.h"
 #include "epis.h"
 
 /* platform (wayland.c, x11.c or cocoa.c) */
@@ -107,44 +108,6 @@ float font_lineh(int font, int size);
 void font_draw(int font, int size, float x, float y, const char *s, int len,
 	       uint32_t col);
 int font_flush(void);
-
-/* text editor with vim emulation (edit.c) */
-enum { ED_NORMAL, ED_INSERT, ED_VISUAL, ED_VLINE };
-enum { ED_UNHANDLED, ED_OK, ED_ESCAPE, ED_ENTER };
-
-struct editor {
-	char *b;
-	size_t cap, gs, ge;
-	size_t cur, vstart, want;
-	int mode, single, top;
-	/* set by ed_select_all: the next typed text replaces everything */
-	int replace;
-	char pend[16];
-	int count;
-	struct {
-		char *text;
-		size_t cur;
-	} undo[64];
-	int nundo;
-};
-
-void ed_init(struct editor *e, const char *text, int single);
-void ed_free(struct editor *e);
-void ed_set(struct editor *e, const char *text);
-size_t ed_len(struct editor *e);
-char ed_at(struct editor *e, size_t i);
-char *ed_text(struct editor *e);
-void ed_insert(struct editor *e, const char *s, size_t n);
-int ed_key(struct editor *e, const char *key, const char *text, int vim);
-size_t ed_line_start(struct editor *e, size_t p);
-size_t ed_line_end(struct editor *e, size_t p);
-int ed_line_of(struct editor *e, size_t p);
-void ed_copy(struct editor *e, size_t a, size_t b, char *out);
-int ed_selection(struct editor *e, size_t *a, size_t *b);
-void ed_remove(struct editor *e, size_t a, size_t b);
-void ed_paste(struct editor *e, const char *s);
-void ed_select_all(struct editor *e);
-char *ed_clipboard(void);
 
 /* selection in the message view (select.c) */
 struct win;
@@ -271,6 +234,7 @@ Clay_String cstr(const char *s);
 Clay_String fstr(const char *fmt, ...);
 Clay_Color col(int c);
 const char *editor_ctx_mode(int *color);
+struct editor *ui_vim_editor(void);
 Clay_ElementId wid(const char *base, int leaf, int i);
 int wizard_save(void);
 int wizard_detect(void);

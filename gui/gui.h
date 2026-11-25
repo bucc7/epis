@@ -42,6 +42,8 @@ int plat_wait(const int *fds, int nfds);
 int plat_next(struct event *ev);
 int plat_menu(const char *const *titles,
 	      const struct menu_item *const *items);
+void plat_clip_set(const char *s);
+char *plat_clip_get(void);
 void plat_size(int *w, int *h);
 float plat_scale(void);
 void plat_quit(void);
@@ -115,6 +117,8 @@ struct editor {
 	size_t cap, gs, ge;
 	size_t cur, vstart, want;
 	int mode, single, top;
+	/* set by ed_select_all: the next typed text replaces everything */
+	int replace;
 	char pend[16];
 	int count;
 	struct {
@@ -136,6 +140,11 @@ size_t ed_line_start(struct editor *e, size_t p);
 size_t ed_line_end(struct editor *e, size_t p);
 int ed_line_of(struct editor *e, size_t p);
 void ed_copy(struct editor *e, size_t a, size_t b, char *out);
+int ed_selection(struct editor *e, size_t *a, size_t *b);
+void ed_remove(struct editor *e, size_t a, size_t b);
+void ed_paste(struct editor *e, const char *s);
+void ed_select_all(struct editor *e);
+char *ed_clipboard(void);
 
 /* application (ui.c) */
 enum { W_LIST, W_MSG, W_COMPOSE, W_TEXT, W_WIZARD };

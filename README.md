@@ -36,8 +36,9 @@ Then build:
 
 The menus are in the system menu bar, so none is drawn in the window and the
 `menu` and `menubar` commands do nothing. Cmd-Q, Cmd-H and Cmd-M quit, hide
-and minimize. Key bindings use Control as written (`<C-w>v`); Command is left
-to the system.
+and minimize, and the Edit menu has the usual Cmd-C, Cmd-X, Cmd-V and Cmd-A.
+Key bindings use Control as written (`<C-w>v`); Command is left to the
+system.
 
 Option types characters, as it does elsewhere on macOS, so layouts that need
 it for `@`, `[` or `{` work. It counts as Alt (`<A-...>`) only together with
@@ -89,7 +90,13 @@ The leader key is Space by default (`leader` option).
 | `<C-w>v` `<C-w>s` `<C-w>hjkl` `<C-w>q` `<C-w>o` | window management |
 | `<leader>c` `<leader>s` | compose, synchronize |
 | `<leader>a`, `:ask`, `:ai_draft` | summarize, ask, or draft a reply with the LLM |
+| `<C-S-c>` `<C-S-x>` `<C-S-v>` | copy, cut, paste, in any mode and field |
 | `:` | command line (`:move Archive`, `:attach FILE`, `:send`, `:w`, `:q`, `:!cmd %f`) |
+
+On macOS, Cmd-C, Cmd-X, Cmd-V and Cmd-A work too. With
+`clipboard = yes` (the default), text you yank in the composer goes to the
+system clipboard and `p` pastes what you copied elsewhere. Deleted text
+stays in the editor, so `dd` does not overwrite the clipboard.
 
 The mode name in the status bar has a colour for each mode, set by the
 `mode_normal`, `mode_insert`, `mode_visual`, `mode_vline`, `mode_command`,
@@ -135,7 +142,7 @@ set in `[theme]`, and `include` loads a theme file (see `themes/`).
   inside the window.
 - Dead keys and input methods: no backend composes them.
 - A macOS application bundle (`.app`).
+- Selecting text with the mouse, and the X11/Wayland primary selection.
 - GSSAPI/Kerberos and NTLM authentication.
-- Fractional scaling on Wayland (integer scale plus the `scale` option),
-  client-side decorations on compositors without xdg-decoration (GNOME),
-  and the system clipboard.
+- Fractional scaling on Wayland (integer scale plus the `scale` option) and
+  client-side decorations on compositors without xdg-decoration (GNOME).

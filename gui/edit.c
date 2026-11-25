@@ -6,6 +6,8 @@
 #include "gui.h"
 
 static char *reg;
+/* the system clipboard as last seen, to notice copies made elsewhere */
+static char *seen;
 static int reg_lines;
 
 static void gap_move(struct editor *e, size_t pos)
@@ -271,12 +273,53 @@ static size_t vmove(struct editor *e, size_t p, int dir)
 	return ls + col < le ? ls + col : le;
 }
 
-static void yank(struct editor *e, size_t a, size_t b, int lines)
+/* the system clipboard with Unix line endings, or NULL */
+char *ed_clipboard(void)
+{
+	char *s = plat_clip_get(), *r, *w;
+
+	if (!s)
+		return NULL;
+	for (r = w = s; *r; r++)
+		if (*r != '\r' || r[1] != '\n')
+			*w++ = *r;
+	*w = 0;
+	return s;
+}
+
+/* fill the register; text that was yanked also goes to the clipboard */
+static void yank(struct editor *e, size_t a, size_t b, int lines, int copy)
 {
 	free(reg);
 	reg = xmalloc(b - a + 1);
 	ed_copy(e, a, b, reg);
 	reg_lines = lines;
+	if (!cfg.clipboard)
+		return;
+	free(seen);
+	if (copy) {
+		plat_clip_set(reg);
+		seen = xstrdup(reg);
+	} else {
+		/* deleted text stays local until something else is copied */
+		seen = ed_clipboard();
+	}
+}
+
+/* let the register take over a clipboard changed since the last yank */
+static void register_sync(void)
+{
+	char *s = cfg.clipboard ? ed_clipboard() : NULL;
+
+	if (!s || !*s || (seen && !strcmp(s, seen))) {
+		free(s);
+		return;
+	}
+	free(reg);
+	reg = xstrdup(s);
+	reg_lines = s[strlen(s) - 1] == '\n';
+	free(seen);
+	seen = s;
 }
 
 /* resolve a motion key into a target position; returns 0 if not a motion */
@@ -407,7 +450,8 @@ static void paste(struct editor *e, int before)
 {
 	size_t n;
 
-	if (!reg)
+	register_sync();
+	if (!reg || !*reg)
 		return;
 	snapshot(e);
 	n = strlen(reg);
@@ -451,7 +495,7 @@ static void apply_op(struct editor *e, char op, size_t a, size_t b,
 		a = b;
 		b = t;
 	}
-	yank(e, a, b, lines);
+	yank(e, a, b, lines, op == 'y');
 	if (op == 'y') {
 		e->cur = a;
 		return;
@@ -648,6 +692,61 @@ static int normal_key(struct editor *e, const char *k, const char *text)
 	return ED_OK;
 }
 
+/* the selected bytes [*a, *b); returns 0 outside visual mode */
+int ed_selection(struct editor *e, size_t *a, size_t *b)
+{
+	if (e->mode != ED_VISUAL && e->mode != ED_VLINE)
+		return 0;
+	*a = e->vstart < e->cur ? e->vstart : e->cur;
+	*b = e->vstart < e->cur ? e->cur : e->vstart;
+	if (e->mode == ED_VLINE) {
+		*a = ed_line_start(e, *a);
+		*b = ed_line_end(e, *b);
+		if (*b < ed_len(e))
+			(*b)++;
+	} else {
+		*b = next_char(e, *b);
+	}
+	return 1;
+}
+
+/*
+ * select everything. In one line fields, and without vim keys, typing then
+ * replaces the selection as it does elsewhere.
+ */
+void ed_select_all(struct editor *e)
+{
+	if (!ed_len(e))
+		return;
+	e->vstart = 0;
+	e->cur = prev_char(e, ed_len(e));
+	e->mode = ED_VISUAL;
+	e->replace = e->single || !cfg.vim_edit;
+}
+
+/* delete [a, b) as one undoable change */
+void ed_remove(struct editor *e, size_t a, size_t b)
+{
+	snapshot(e);
+	ed_del(e, a, b);
+}
+
+/* insert pasted text at the cursor, replacing a visual selection */
+void ed_paste(struct editor *e, const char *s)
+{
+	size_t a, b;
+
+	snapshot(e);
+	if (ed_selection(e, &a, &b)) {
+		ed_del(e, a, b);
+		e->mode = e->replace ? ED_INSERT : ED_NORMAL;
+	}
+	e->replace = 0;
+	ed_insert(e, s, strlen(s));
+	if (e->mode == ED_NORMAL && *s)
+		e->cur = prev_char(e, e->cur);
+}
+
 /*
  * feed one key token to the editor. key is the normalized token such as
  * "j" or "<CR>", text the characters it produced. Returns ED_UNHANDLED
@@ -655,6 +754,20 @@ static int normal_key(struct editor *e, const char *k, const char *text)
  */
 int ed_key(struct editor *e, const char *key, const char *text, int vim)
 {
+	size_t a, b;
+
+	if (e->replace) {
+		e->replace = 0;
+		if (ed_selection(e, &a, &b)) {
+			e->mode = ED_INSERT;
+			if (!strcmp(key, "<BS>") || !strcmp(key, "<Del>")) {
+				ed_remove(e, a, b);
+				return ED_OK;
+			}
+			if (text && (unsigned char)text[0] >= 0x20)
+				ed_remove(e, a, b);
+		}
+	}
 	if (!vim)
 		e->mode = ED_INSERT;
 	if (e->mode == ED_INSERT)

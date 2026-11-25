@@ -107,7 +107,7 @@ struct config {
 	char *font, *font_mono;
 	int font_size, radius, padding;
 	float scale;
-	int vim_edit, menubar;
+	int vim_edit, menubar, clipboard;
 	char *leader;
 	char *editor_cmd;
 	uint32_t color[C_COUNT];

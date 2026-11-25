@@ -45,6 +45,14 @@ static struct {
 	struct event q[QLEN];
 	int qh, qt;
 	float px, py;
+	struct wl_data_device_manager *dataman;
+	struct wl_data_device *data;
+	struct wl_data_source *source;
+	struct wl_data_offer *offer, *fresh, *dnd;
+	const char *mime, *fresh_mime;
+	char *clip;
+	/* serial of the last input, required to set the clipboard */
+	uint32_t serial;
 } wl;
 
 static void push(struct event *e)
@@ -188,7 +196,7 @@ static void kb_enter(void *d, struct wl_keyboard *k, uint32_t s,
 {
 	(void)d;
 	(void)k;
-	(void)s;
+	wl.serial = s;
 	(void)sf;
 	(void)keys;
 }
@@ -234,7 +242,7 @@ static void kb_key(void *d, struct wl_keyboard *k, uint32_t serial,
 
 	(void)d;
 	(void)k;
-	(void)serial;
+	wl.serial = serial;
 	(void)time;
 	if (st == WL_KEYBOARD_KEY_STATE_PRESSED) {
 		key_event(code);
@@ -326,7 +334,7 @@ static void pt_button(void *d, struct wl_pointer *p, uint32_t s, uint32_t t,
 
 	(void)d;
 	(void)p;
-	(void)s;
+	wl.serial = s;
 	(void)t;
 	e.x = wl.px;
 	e.y = wl.py;
@@ -410,6 +418,185 @@ static void seat_name(void *d, struct wl_seat *s, const char *n)
 
 static const struct wl_seat_listener seat_listener = { seat_caps, seat_name };
 
+static const char *text_mimes[] = {
+	"text/plain;charset=utf-8", "UTF8_STRING", "text/plain"
+};
+
+static void offer_mime(void *d, struct wl_data_offer *o, const char *mime)
+{
+	int i;
+
+	(void)d;
+	if (o != wl.fresh)
+		return;
+	/* the entries are in order of preference */
+	for (i = 0; i < 3; i++) {
+		if (wl.fresh_mime == text_mimes[i])
+			return;
+		if (!strcmp(mime, text_mimes[i])) {
+			wl.fresh_mime = text_mimes[i];
+			return;
+		}
+	}
+}
+
+static const struct wl_data_offer_listener offer_listener = {
+	.offer = offer_mime
+};
+
+static void dev_offer(void *d, struct wl_data_device *dev,
+		      struct wl_data_offer *o)
+{
+	(void)d;
+	(void)dev;
+	wl.fresh = o;
+	wl.fresh_mime = NULL;
+	wl_data_offer_add_listener(o, &offer_listener, NULL);
+}
+
+static void drop_dnd(void)
+{
+	if (wl.dnd)
+		wl_data_offer_destroy(wl.dnd);
+	wl.dnd = NULL;
+}
+
+/* drag and drop is not accepted, only its offer is released */
+static void dev_enter(void *d, struct wl_data_device *dev, uint32_t s,
+		      struct wl_surface *sf, wl_fixed_t x, wl_fixed_t y,
+		      struct wl_data_offer *o)
+{
+	(void)d;
+	(void)dev;
+	(void)s;
+	(void)sf;
+	(void)x;
+	(void)y;
+	drop_dnd();
+	wl.dnd = o;
+}
+
+static void dev_leave(void *d, struct wl_data_device *dev)
+{
+	(void)d;
+	(void)dev;
+	drop_dnd();
+}
+
+static void dev_motion(void *d, struct wl_data_device *dev, uint32_t t,
+		       wl_fixed_t x, wl_fixed_t y)
+{
+	(void)d;
+	(void)dev;
+	(void)t;
+	(void)x;
+	(void)y;
+}
+
+static void dev_drop(void *d, struct wl_data_device *dev)
+{
+	(void)d;
+	(void)dev;
+}
+
+static void dev_selection(void *d, struct wl_data_device *dev,
+			  struct wl_data_offer *o)
+{
+	(void)d;
+	(void)dev;
+	if (wl.offer && wl.offer != o)
+		wl_data_offer_destroy(wl.offer);
+	wl.offer = o;
+	wl.mime = o && o == wl.fresh ? wl.fresh_mime : NULL;
+}
+
+static const struct wl_data_device_listener dev_listener = {
+	.data_offer = dev_offer, .enter = dev_enter, .leave = dev_leave,
+	.motion = dev_motion, .drop = dev_drop, .selection = dev_selection
+};
+
+static void src_target(void *d, struct wl_data_source *s, const char *mime)
+{
+	(void)d;
+	(void)s;
+	(void)mime;
+}
+
+static void src_send(void *d, struct wl_data_source *s, const char *mime,
+		     int32_t fd)
+{
+	const char *p = wl.clip ? wl.clip : "";
+	size_t n = strlen(p);
+	ssize_t w;
+
+	(void)d;
+	(void)s;
+	(void)mime;
+	while (n && (w = write(fd, p, n)) > 0) {
+		p += w;
+		n -= w;
+	}
+	close(fd);
+}
+
+/* another client took over the clipboard */
+static void src_cancelled(void *d, struct wl_data_source *s)
+{
+	(void)d;
+	wl_data_source_destroy(s);
+	if (s == wl.source)
+		wl.source = NULL;
+}
+
+static const struct wl_data_source_listener src_listener = {
+	.target = src_target, .send = src_send, .cancelled = src_cancelled
+};
+
+void plat_clip_set(const char *s)
+{
+	int i;
+
+	free(wl.clip);
+	wl.clip = xstrdup(s);
+	if (!wl.data)
+		return;
+	if (wl.source)
+		wl_data_source_destroy(wl.source);
+	wl.source = wl_data_device_manager_create_data_source(wl.dataman);
+	wl_data_source_add_listener(wl.source, &src_listener, NULL);
+	for (i = 0; i < 3; i++)
+		wl_data_source_offer(wl.source, text_mimes[i]);
+	wl_data_device_set_selection(wl.data, wl.source, wl.serial);
+	wl_display_flush(wl.dpy);
+}
+
+/* the clipboard text, or NULL; the caller frees it */
+char *plat_clip_get(void)
+{
+	struct buf b = { 0 };
+	struct pollfd pf = { 0 };
+	char tmp[4096];
+	ssize_t n;
+	int p[2];
+
+	/* our own text is not read back through the compositor */
+	if (wl.source || !wl.data)
+		return wl.clip ? xstrdup(wl.clip) : NULL;
+	if (!wl.offer || !wl.mime || pipe(p))
+		return NULL;
+	wl_data_offer_receive(wl.offer, wl.mime, p[1]);
+	close(p[1]);
+	wl_display_flush(wl.dpy);
+	pf.fd = p[0];
+	pf.events = POLLIN;
+	buf_add(&b, "", 0);
+	while (poll(&pf, 1, 1000) > 0 && (n = read(p[0], tmp,
+						   sizeof(tmp))) > 0)
+		buf_add(&b, tmp, n);
+	close(p[0]);
+	return b.p;
+}
+
 static void reg_global(void *d, struct wl_registry *r, uint32_t name,
 		       const char *iface, uint32_t ver)
 {
@@ -422,6 +609,10 @@ static void reg_global(void *d, struct wl_registry *r, uint32_t name,
 	else if (!strcmp(iface, wl_seat_interface.name))
 		wl.seat = wl_registry_bind(r, name, &wl_seat_interface,
 					   ver < 5 ? ver : 5);
+	else if (!strcmp(iface, wl_data_device_manager_interface.name))
+		/* version 1 has all the clipboard needs */
+		wl.dataman = wl_registry_bind(r, name,
+			&wl_data_device_manager_interface, 1);
 	else if (!strcmp(iface, wl_shm_interface.name))
 		wl.shm = wl_registry_bind(r, name, &wl_shm_interface, 1);
 	else if (!strcmp(iface, zxdg_decoration_manager_v1_interface.name))
@@ -464,6 +655,11 @@ int plat_init(const char *title, int w, int h)
 	xdg_wm_base_add_listener(wl.wm, &wm_listener, NULL);
 	if (wl.seat)
 		wl_seat_add_listener(wl.seat, &seat_listener, NULL);
+	if (wl.dataman && wl.seat) {
+		wl.data = wl_data_device_manager_get_data_device(wl.dataman,
+								 wl.seat);
+		wl_data_device_add_listener(wl.data, &dev_listener, NULL);
+	}
 	if (wl.shm) {
 		wl.ctheme = wl_cursor_theme_load(getenv("XCURSOR_THEME"),
 						 ct ? atoi(ct) : 24, wl.shm);
@@ -583,5 +779,6 @@ void plat_quit(void)
 	xkb_state_unref(wl.state);
 	xkb_keymap_unref(wl.keymap);
 	xkb_context_unref(wl.xkb);
+	free(wl.clip);
 	wl_display_disconnect(wl.dpy);
 }

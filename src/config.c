@@ -200,6 +200,8 @@ static void general_set(const char *k, const char *v, const char *file,
 		cfg.vim_edit = boolval(v);
 	} else if (!strcmp(k, "menubar")) {
 		cfg.menubar = boolval(v);
+	} else if (!strcmp(k, "clipboard")) {
+		cfg.clipboard = boolval(v);
 	} else if (!strcmp(k, "leader")) {
 		set_str(&cfg.leader, v);
 	} else if (!strcmp(k, "editor")) {
@@ -375,6 +377,7 @@ int config_load(const char *path)
 	cfg.padding = 8;
 	cfg.vim_edit = 1;
 	cfg.menubar = 1;
+	cfg.clipboard = 1;
 	cfg.leader = xstrdup("<Space>");
 	cfg.llm_url = xstrdup("https://api.anthropic.com/v1/messages");
 	cfg.llm_model = xstrdup("claude-opus-5-5");

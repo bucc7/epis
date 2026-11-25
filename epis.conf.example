@@ -5,6 +5,8 @@ maildir = ~/Mail
 leader = <Space>
 # vim keys in the message editor
 vim_edit = yes
+# yanked text goes to the system clipboard, and p pastes from it
+clipboard = yes
 # the menu inside the window; macOS always uses the system menu bar
 menubar = yes
 font_size = 15

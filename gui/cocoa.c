@@ -20,6 +20,7 @@
 #define SCROLL_STEP 40.0
 
 extern id const NSDefaultRunLoopMode;
+extern id const NSPasteboardTypeString;
 
 static struct {
 	id app, win, view, layer, delegate;
@@ -384,6 +385,21 @@ static id menu_add(id menu, const char *title, const char *action,
 		action ? sel(action) : NULL, nsstr(key));
 }
 
+/* the standard shortcut of an editing command */
+static const char *shortcut(const char *cmd)
+{
+	static const char *keys[][2] = {
+		{ "cut", "x" }, { "copy", "c" }, { "paste", "v" },
+		{ "select_all", "a" }
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(keys) / sizeof(*keys); i++)
+		if (!strcmp(cmd, keys[i][0]))
+			return keys[i][1];
+	return "";
+}
+
 static void menu_command_item(id menu, const char *title, const char *key,
 			      nsint tag)
 {
@@ -422,8 +438,8 @@ int plat_menu(const char *const *titles, const struct menu_item *const *items)
 			/* Quit and the in-window menu bar do not apply */
 			if (!strcmp(c, "quit") || !strcmp(c, "menubar"))
 				continue;
-			menu_command_item(menu, items[i][j].label, "",
-					  i * 100 + j);
+			menu_command_item(menu, items[i][j].label,
+					  shortcut(c), i * 100 + j);
 		}
 		if (!strcmp(titles[i], "Window")) {
 			menu_add(menu, "Minimize", "performMiniaturize:", "m");
@@ -502,6 +518,35 @@ int plat_wait(const int *fds, int nfds)
 	}
 	call(pool, "drain");
 	return 0;
+}
+
+void plat_clip_set(const char *s)
+{
+	id pool = new_object("NSAutoreleasePool");
+	id pb = get(cls("NSPasteboard"), "generalPasteboard");
+	id str = nsstr(s);
+
+	/* text that is not valid UTF-8 is copied byte for byte as Latin-1 */
+	if (!str)
+		str = MSG(id, id, SEL, const char *, nsuint)(cls("NSString"),
+			sel("stringWithCString:encoding:"), s, 5);
+	MSG(nsint, id, SEL)(pb, sel("clearContents"));
+	MSG(BOOL, id, SEL, id, id)(pb, sel("setString:forType:"), str,
+				   NSPasteboardTypeString);
+	call(pool, "drain");
+}
+
+/* the clipboard text, or NULL; the caller frees it */
+char *plat_clip_get(void)
+{
+	id pool = new_object("NSAutoreleasePool");
+	id pb = get(cls("NSPasteboard"), "generalPasteboard");
+	id str = MSG(id, id, SEL, id)(pb, sel("stringForType:"),
+				      NSPasteboardTypeString);
+	char *s = str ? xstrdup(utf8(str)) : NULL;
+
+	call(pool, "drain");
+	return s;
 }
 
 /* size of the view in pixels */

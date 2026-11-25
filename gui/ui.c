@@ -62,6 +62,9 @@ static const struct bind defaults[] = {
 	{ "global", "<C-w>o", "only" },
 	{ "global", "<C-w>=", "equalize" },
 	{ "global", "<F10>", "menu" },
+	{ "global", "<C-S-c>", "copy" },
+	{ "global", "<C-S-x>", "cut" },
+	{ "global", "<C-S-v>", "paste" },
 	{ "list", "j", "down" },
 	{ "list", "k", "up" },
 	{ "list", "<Down>", "down" },
@@ -115,12 +118,17 @@ struct cbind {
 static struct cbind *binds;
 static int nbinds;
 
-const char *const menu_titles[] = { "File", "Message", "View", "Window", "Help",
-	NULL };
+const char *const menu_titles[] = { "File", "Edit", "Message", "View",
+	"Window", "Help", NULL };
 
 static const struct menu_item m_file[] = {
 	{ "Compose", "compose" }, { "Synchronize", "sync" },
 	{ "Find folder", "find_inbox" }, { "Quit", "quit" }, { NULL, NULL }
+};
+
+static const struct menu_item m_edit[] = {
+	{ "Cut", "cut" }, { "Copy", "copy" }, { "Paste", "paste" },
+	{ "Select all", "select_all" }, { NULL, NULL }
 };
 
 static const struct menu_item m_msg[] = {
@@ -148,8 +156,8 @@ static const struct menu_item m_help[] = {
 	{ NULL, NULL }
 };
 
-const struct menu_item *const menu_items[] = { m_file, m_msg, m_view, m_win,
-	m_help };
+const struct menu_item *const menu_items[] = { m_file, m_edit, m_msg,
+	m_view, m_win, m_help };
 
 const struct menu_item ctx_items[] = {
 	{ "Open", "open" }, { "Open in new window", "open_split" },
@@ -318,7 +326,10 @@ static void key_token(struct event *e, char *out, size_t n)
 		char u[8] = "";
 
 		u[utf8_encode(u, e->cp ? e->cp : '?')] = 0;
-		snprintf(out, n, "<%s%s>", mods, u);
+		if (!(e->mods & MOD_CTRL) || e->cp >= 0x80 ||
+		    !isalpha((int)e->cp))
+			shift = "";
+		snprintf(out, n, "<%s%s%s>", mods, shift, u);
 		return;
 	}
 	if (e->text[0] == '<')
@@ -1051,7 +1062,8 @@ static const char *cmd_names[] = {
 	"reply_all", "forward", "delete", "archive", "move", "flag",
 	"toggle_read", "send", "draft", "attach", "next_field", "prev_field",
 	"sidebar", "menubar", "menu", "summarize", "ask", "ai_draft", "reload",
-	"help", "cmdline", "screenshot", "feedkeys", NULL
+	"help", "cmdline", "screenshot", "feedkeys", "copy", "cut", "paste",
+	"select_all", NULL
 };
 
 static void find_folder(int kind)
@@ -1311,6 +1323,86 @@ static void scroll(struct win *w, float dy)
 
 static void feedkeys(const char *keys);
 
+static int is_clip_command(const char *c)
+{
+	return !strcmp(c, "copy") || !strcmp(c, "cut") ||
+	    !strcmp(c, "paste") || !strcmp(c, "select_all");
+}
+
+/* the text field that has the keyboard, or NULL */
+static struct editor *active_field(void)
+{
+	struct win *w = focused();
+
+	if (app.wizard)
+		return &app.wf[app.wfield];
+	if (app.pick)
+		return &app.pick->input;
+	if (app.cmdline)
+		return &app.cmd;
+	return w && w->type == W_COMPOSE ? &w->f[w->field] : NULL;
+}
+
+/* paste into a field; one line fields get line breaks turned to spaces */
+static void paste_field(struct editor *e)
+{
+	char *s = ed_clipboard(), *p;
+	size_t n;
+
+	if (!s || !*s) {
+		ui_status(1, "the clipboard is empty");
+		free(s);
+		return;
+	}
+	if (e->single) {
+		for (n = strlen(s); n && s[n - 1] == '\n'; n--)
+			s[n - 1] = 0;
+		for (p = s; *p; p++)
+			if (*p == '\n' || *p == '\t')
+				*p = ' ';
+	}
+	ed_paste(e, s);
+	free(s);
+	if (app.pick)
+		picker_filter();
+}
+
+/* copy, cut, paste and select_all act on whatever has the keyboard */
+static void clip_command(const char *cmd)
+{
+	struct editor *e = active_field();
+	char *s = NULL;
+	size_t a, b;
+
+	app.dirty = 1;
+	if (!strcmp(cmd, "paste")) {
+		if (e)
+			paste_field(e);
+		return;
+	}
+	if (!strcmp(cmd, "select_all")) {
+		if (e)
+			ed_select_all(e);
+		return;
+	}
+	if (e && ed_selection(e, &a, &b)) {
+		s = xmalloc(b - a + 1);
+		ed_copy(e, a, b, s);
+		if (!strcmp(cmd, "cut"))
+			ed_remove(e, a, b);
+		e->mode = e->replace ? ED_INSERT : ED_NORMAL;
+		e->replace = 0;
+	}
+	if (!s) {
+		ui_status(1, "nothing selected");
+		return;
+	}
+	plat_clip_set(s);
+	ui_status(0, "%s to the clipboard", !strcmp(cmd, "cut") ?
+		  "cut" : "copied");
+	free(s);
+}
+
 /* run one command line such as "move Archive" or "!notmuch new" */
 void ui_command(const char *line)
 {
@@ -1349,7 +1441,9 @@ void ui_command(const char *line)
 		}
 	page = w && w->vis > 2 ? w->vis - 2 : 10;
 	app.dirty = 1;
-	if (!strcmp(name, "quit") || !strcmp(name, "qa") ||
+	if (is_clip_command(name)) {
+		clip_command(name);
+	} else if (!strcmp(name, "quit") || !strcmp(name, "qa") ||
 	    !strcmp(name, "q!")) {
 		app.running = 0;
 	} else if (!strcmp(name, "q") || !strcmp(name, "close")) {
@@ -1569,7 +1663,7 @@ static void compose_key(struct win *w, const char *tok, const char *text)
 	struct editor *e = &w->f[w->field];
 	char pend[64], *p;
 
-	if (e->mode == ED_INSERT || !cfg.vim_edit) {
+	if (e->mode == ED_INSERT || !cfg.vim_edit || e->replace) {
 		if (!strcmp(tok, "<Tab>") || !strcmp(tok, "<S-Tab>")) {
 			if (w->field < 3 || !cfg.vim_edit) {
 				ui_command(tok[1] == 'S' ? "prev_field" :
@@ -1669,6 +1763,16 @@ static void key_tok(const char *tok, const char *text)
 
 	snprintf(ev->text, sizeof(ev->text), "%s", text);
 	app.dirty = 1;
+	/* clipboard chords work in every mode, text fields included */
+	if (tok[0] == '<' && tok[1] && tok[2] == '-') {
+		const char *cmd = NULL;
+
+		if (bind_match("global", tok, &cmd) == 2 &&
+		    is_clip_command(cmd)) {
+			clip_command(cmd);
+			return;
+		}
+	}
 	if (app.menu_open || app.ctx_open) {
 		app.menu_open = app.ctx_open = 0;
 		if (!strcmp(tok, "<Esc>"))
@@ -1864,9 +1968,13 @@ static void wheel(float dy)
 /* run a command chosen from the system menu bar */
 static void menu_command(const char *cmd)
 {
-	if (app.wizard) {
+	if (app.wizard && !is_clip_command(cmd)) {
 		if (!strcmp(cmd, "quit"))
 			app.running = 0;
+		return;
+	}
+	if (is_clip_command(cmd)) {
+		clip_command(cmd);
 		return;
 	}
 	picker_close();

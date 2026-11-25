@@ -828,8 +828,26 @@ static void statusbar(void)
 				CLAY_TEXT(fstr("%d selected", hi - lo + 1),
 					  txt(FONT_BOLD, C_FLAGGED, 2));
 		}
-		CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
-					       CLAY_SIZING_FIT(0) } } }) {
+		Clay_ElementId line = CLAY_ID("statusline");
+		float over = 0;
+
+		if (app.cmdline || prompt) {
+			char *s = app.cmdline ? ed_text(&app.cmd) :
+			    xstrdup(prompt);
+			size_t upto = app.cmdline ? app.cmd.cur : strlen(s);
+			float room = elem_w(line) - 3 * font_width(FONT_MONO,
+					cfg.font_size, "M", 1);
+
+			over = font_width(FONT_MONO, cfg.font_size, s, upto) -
+			    room;
+			if (room <= 0 || over < 0)
+				over = 0;
+			free(s);
+		}
+		CLAY({ .id = line, .layout = { .sizing = {
+				CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) } },
+		       .clip = { .horizontal = true,
+				 .childOffset = { -over, 0 } } }) {
 			if (app.cmdline) {
 				CLAY_TEXT(CLAY_STRING(":"), txt(FONT_MONO,
 								C_STATUS_FG, 2));

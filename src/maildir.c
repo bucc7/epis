@@ -353,3 +353,22 @@ int maildir_folders(const char *acc, char ***out)
 	*out = v;
 	return n;
 }
+
+/*
+ * move a message to the account trash folder, or mark it trashed when it
+ * already is in the trash or there is no trash folder. Returns the new path.
+ */
+char *maildir_trash(struct account *a, const char *path)
+{
+	char *dir = folder_dir(a->name, a->trash);
+	char *cur = xasprintf("%s/cur", dir), *np;
+
+	if (strncmp(path, dir, strlen(dir)) && !access(cur, F_OK))
+		np = maildir_move(path, dir);
+	else
+		np = maildir_set_flags(path, maildir_flags_parse(path) |
+				       F_TRASHED);
+	free(dir);
+	free(cur);
+	return np;
+}

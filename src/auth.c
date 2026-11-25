@@ -250,6 +250,10 @@ static char *token_request(struct account *a, const struct provider *pv,
 
 	buf_puts(form, "&client_id=");
 	url_encode(form, a->client_id);
+	if (!strcmp(pv->name, "microsoft")) {
+		buf_puts(form, "&scope=");
+		url_encode(form, pv->scope);
+	}
 	if (a->client_secret) {
 		buf_puts(form, "&client_secret=");
 		url_encode(form, a->client_secret);

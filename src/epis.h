@@ -214,6 +214,7 @@ int maildir_flags_parse(const char *path);
 void maildir_flags_str(int flags, char *out);
 char *maildir_set_flags(const char *path, int flags);
 char *maildir_move(const char *path, const char *dstdir);
+char *maildir_trash(struct account *a, const char *path);
 unsigned maildir_uid(const char *path);
 char *maildir_id(const char *path);
 char *maildir_resolve(const char *id);
@@ -276,6 +277,6 @@ int cli_main(int argc, char **argv);
 int setup_wizard_tty(void);
 
 /* gui */
-int gui_main(void);
+int gui_main(const char *startup);
 
 #endif

@@ -11,9 +11,10 @@ static int json_out;
 
 static void usage(void)
 {
-	puts("usage: epis [-c config] [command] [args]\n"
+	puts("usage: epis [-c config] [-e commands] [command] [args]\n"
 	     "\n"
-	     "  (no command)                 start the graphical client\n"
+	     "  (no command)                 start the graphical client,\n"
+	     "                               running -e commands first\n"
 	     "  setup                        interactive account setup\n"
 	     "  accounts                     list configured accounts\n"
 	     "  folders [-a acc]             list local folders\n"
@@ -489,22 +490,12 @@ static int cmd_move(const char *id, const char *folder)
 
 static int cmd_delete(const char *id)
 {
-	struct account *a = account_of_id(id);
-	char *dir = folder_dir(a->name, a->trash), *cur = xasprintf("%s/cur",
-								     dir);
-	char *path = must_resolve(id);
-	int in_trash = strstr(path, dir) == path;
+	char *path = must_resolve(id), *np;
 
-	if (!in_trash && !access(cur, F_OK)) {
-		/* keep the original until the next sync removes it remotely */
-		char *np = maildir_move(path, dir);
-
-		free(np);
-	} else {
-		set_flag(&path, F_TRASHED, 0);
-	}
-	free(dir);
-	free(cur);
+	np = maildir_trash(account_of_id(id), path);
+	if (!np)
+		die("delete failed");
+	free(np);
 	free(path);
 	return 0;
 }

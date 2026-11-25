@@ -755,10 +755,26 @@ static char *quote_body(struct message *m)
 	buf_printf(&b, "\n\nOn %s, %s wrote:\n", date ? date : "?",
 		   from ? from : "?");
 	for (line = t; line; line = next) {
+		size_t n;
+
 		next = strchr(line, '\n');
 		if (next)
 			*next++ = 0;
-		buf_printf(&b, ">%s%s\n", *line == '>' ? "" : " ", line);
+		do {
+			n = strlen(line);
+			if (n > 72 && *line != '>') {
+				n = 72;
+				while (n > 20 && line[n] != ' ')
+					n--;
+				if (line[n] != ' ')
+					n = strlen(line);
+			}
+			buf_printf(&b, ">%s%.*s\n", *line == '>' ? "" : " ",
+				   (int)n, line);
+			line += n;
+			while (*line == ' ')
+				line++;
+		} while (*line);
 	}
 	free(t);
 	free(from);

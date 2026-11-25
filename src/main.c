@@ -8,12 +8,16 @@
 
 int main(int argc, char **argv)
 {
-	const char *conf = NULL;
+	const char *conf = NULL, *startup = NULL;
 
 	argc--;
 	argv++;
-	if (argc >= 2 && !strcmp(argv[0], "-c")) {
-		conf = argv[1];
+	while (argc >= 2 && (!strcmp(argv[0], "-c") || !strcmp(argv[0],
+								"-e"))) {
+		if (argv[0][1] == 'c')
+			conf = argv[1];
+		else
+			startup = argv[1];
 		argc -= 2;
 		argv += 2;
 	}
@@ -26,8 +30,9 @@ int main(int argc, char **argv)
 	if (argc)
 		return cli_main(argc, argv);
 #ifdef EPIS_GUI
-	return gui_main();
+	return gui_main(startup);
 #else
+	(void)startup;
 	if (!config_exists())
 		return setup_wizard_tty();
 	return cli_main(1, (char *[]){ "help", NULL });

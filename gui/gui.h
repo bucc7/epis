@@ -142,6 +142,12 @@ void list_run(struct win *w, const char *cmd);
 int list_key(struct win *w, const char *tok, int bound);
 int list_command_range(struct win *w, const char **line);
 
+/* undo for actions on messages (undo.c) */
+void undo_add(const char *before, const char *after, int flag);
+void undo_commit(void);
+int undo_last(void (*moved)(const char *from, const char *to), int *done,
+	      int *failed, char **first);
+
 /* application (ui.c) */
 enum { W_LIST, W_MSG, W_COMPOSE, W_TEXT, W_WIZARD };
 

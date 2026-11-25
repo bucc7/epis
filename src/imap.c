@@ -661,7 +661,18 @@ int imap_sync_folder(struct imap *im, struct account *a, const char *fname,
 		r = rfind(sc.r, sc.nr, loc[i].uid);
 		s = rfind(base, nbase, loc[i].uid);
 		if (!r) {
-			unlink(loc[i].path);
+			if (s) {
+				/* deleted on the server since the last sync */
+				unlink(loc[i].path);
+			} else {
+				/*
+				 * the last sync did not leave this file, as
+				 * when a delete is undone after the server
+				 * has seen it: keep it, without its old UID,
+				 * so that the next sync uploads it
+				 */
+				free(maildir_move(loc[i].path, dir));
+			}
 			continue;
 		}
 		seen[r - sc.r].uid = 1;

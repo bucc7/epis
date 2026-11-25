@@ -76,8 +76,12 @@ move in the message list or scroll a message
 .B <CR> <S-CR>
 open the message in this window or in a new window
 .TP
-.B r R f a m s u
+.B r R f a m s n
 reply, reply all, forward, archive, move, flag, toggle read
+.TP
+.B u
+undo the last delete, archive, move or flag change; a count undoes several.
+Messages that a sync has already deleted or moved cannot be restored
 .TP
 .BR dd ", " 3dd ", " dj ", " dG
 delete this message, several, or up to where a motion goes. In a message,
@@ -86,7 +90,7 @@ deletes it
 .TP
 .BR v " or " V " in the list"
 select messages, then
-.BR d ", " x ", " a ", " s ", " u " or " m
+.BR d ", " x ", " a ", " s ", " n " or " m
 act on all of them. Counts work with motions and actions, and commands take
 row ranges, as in
 .B :2,8delete

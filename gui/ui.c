@@ -107,7 +107,8 @@ static const struct bind defaults[] = {
 	{ "mail", "a", "archive" },
 	{ "mail", "m", "move" },
 	{ "mail", "s", "flag" },
-	{ "mail", "u", "toggle_read" },
+	{ "mail", "n", "toggle_read" },
+	{ "mail", "u", "undo" },
 	{ "compose", "ZZ", "send" },
 	{ "compose", "<C-j>", "next_field" },
 	{ "compose", "<C-k>", "prev_field" },
@@ -141,7 +142,7 @@ static const struct menu_item m_msg[] = {
 	{ "Reply", "reply" }, { "Reply all", "reply_all" },
 	{ "Forward", "forward" }, { "Toggle read", "toggle_read" },
 	{ "Toggle flag", "flag" }, { "Move to...", "move" },
-	{ "Archive", "archive" }, { "Delete", "delete" },
+	{ "Archive", "archive" }, { "Delete", "delete" }, { "Undo", "undo" },
 	{ "Summarize (AI)", "summarize" }, { NULL, NULL }
 };
 
@@ -1071,7 +1072,7 @@ static const char *cmd_names[] = {
 	"sidebar", "menubar", "menu", "summarize", "ask", "ai_draft", "reload",
 	"help", "cmdline", "screenshot", "feedkeys", "copy", "cut", "paste",
 	"select_all", "visual", "visual_line", "set", "nohlsearch",
-	"delete_motion", NULL
+	"delete_motion", "undo", NULL
 };
 
 static void find_folder(int kind)
@@ -1246,8 +1247,11 @@ static void move_to(const char *af)
 			continue;
 		np = maildir_move(moving[i], dir);
 		np ? done++ : failed++;
+		if (np)
+			undo_add(moving[i], np, 0);
 		free(np);
 	}
+	undo_commit();
 	did = xasprintf("moved to %s", af);
 	report(did, done, failed);
 	free(did);
@@ -1314,12 +1318,15 @@ static void msg_flag(int flag)
 
 		np = maildir_set_flags(v[i], set ? f | flag : f & ~flag);
 		failed += !np;
+		if (np)
+			undo_add(v[i], np, flag);
 		if (np && w->type == W_MSG) {
 			free(w->path);
 			w->path = xstrdup(np);
 		}
 		free(np);
 	}
+	undo_commit();
 	if (failed)
 		report("changed", n - failed, failed);
 	/* flagging keeps the cursor where it ended */
@@ -1356,11 +1363,14 @@ static void msg_delete(int archive)
 			continue;
 		}
 		done++;
+		/* a message that was only marked keeps its name */
+		undo_add(v[i], np, list_same(v[i], np) ? F_TRASHED : 0);
 		/* still outside the trash: only flagged for removal */
 		if (trash && (!in_folder(np, trash) || in_folder(v[i], trash)))
 			marked++;
 		free(np);
 	}
+	undo_commit();
 	if (skipped == n)
 		ui_status(0, "already archived");
 	else if (archive)
@@ -1380,6 +1390,77 @@ out:
 	free(dir);
 	free(cur);
 	free_paths(v, n);
+}
+
+/* keep message views pointing at a file that has been renamed */
+static void follow_rename(struct node *n, const char *from, const char *to)
+{
+	if (!n)
+		return;
+	if (n->w && n->w->path && !strcmp(n->w->path, from)) {
+		free(n->w->path);
+		n->w->path = xstrdup(to);
+	}
+	follow_rename(n->a, from, to);
+	follow_rename(n->b, from, to);
+}
+
+static void renamed(const char *from, const char *to)
+{
+	follow_rename(app.root, from, to);
+}
+
+static void clear_selections(struct node *n)
+{
+	if (!n)
+		return;
+	if (n->w)
+		n->w->visual = 0;
+	clear_selections(n->a);
+	clear_selections(n->b);
+}
+
+/* undo the last times actions on messages */
+static void msg_undo(int times)
+{
+	char *first = NULL, *one;
+	int done = 0, failed = 0, undone = 0, d, f, i;
+	struct win *w;
+
+	/* a running sync would be changing the same files */
+	if (app.syncing) {
+		ui_status(1, "wait for the sync to finish before undoing");
+		return;
+	}
+	while (times-- > 0 && undo_last(renamed, &d, &f, &one)) {
+		undone++;
+		done += d;
+		failed += f;
+		if (one) {
+			free(first);
+			first = one;
+		}
+	}
+	if (!undone) {
+		ui_status(0, "nothing to undo");
+		return;
+	}
+	clear_selections(app.root);
+	reload_lists(app.root);
+	/* as in vim, the cursor goes to what came back */
+	w = focused();
+	if (w && w->has_list && first)
+		for (i = 0; i < w->nmsgs; i++)
+			if (list_same(w->msgs[i].path, first))
+				w->sel = i;
+	if (failed)
+		ui_status(1, "%d of %d messages could not be restored; they "
+			  "changed since, probably by a sync", failed,
+			  done + failed);
+	else
+		ui_status(0, "undone: %d message%s restored", done,
+			  done == 1 ? "" : "s");
+	free(first);
 }
 
 static void move_sel(struct win *w, int d)
@@ -1808,6 +1889,8 @@ void ui_command(const char *line)
 		free(p);
 	} else if (!strcmp(name, "feedkeys") && arg) {
 		feedkeys(arg);
+	} else if (!strcmp(name, "undo")) {
+		msg_undo(app.count ? app.count : 1);
 	} else if (!strcmp(name, "delete_motion")) {
 		/* only meaningful as a key, where a motion can follow */
 		ui_status(1, "delete_motion works as a key in a list");

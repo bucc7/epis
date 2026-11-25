@@ -87,7 +87,8 @@ The leader key is Space by default (`leader` option).
 | `<S-CR>`, right click | open in a new window / context menu |
 | `r` `R` `f` | reply, reply all, forward |
 | `dd` | delete (in the list and in a message) |
-| `a` `m` `s` `u` | archive, move, flag, toggle read |
+| `a` `m` `s` `n` | archive, move, flag, toggle read |
+| `u` | undo |
 | `v` `V` in the list | select several messages |
 | `<C-w>v` `<C-w>s` `<C-w>hjkl` `<C-w>q` `<C-w>o` | window management |
 | `<leader>c` `<leader>s` | compose, synchronize |
@@ -106,9 +107,10 @@ The message list takes counts, a delete operator and a visual mode.
 | `5j` `12G` | move five rows, go to row twelve |
 | `dd` `3dd` | delete this message, or three from here |
 | `dj` `dk` `d2j` `dG` `dgg` `d5G` | delete from here to where the motion goes |
-| `3a` `3s` `3u` `3m` | archive, flag, toggle read or move three messages |
+| `3a` `3s` `3n` `3m` | archive, flag, toggle read or move three messages |
 | `v` or `V` | select; extend with any list motion, `o` swaps ends |
-| `d` `x` `a` `s` `u` `m` | act on the selection |
+| `d` `x` `a` `s` `n` `m` | act on the selection |
+| `u` `3u` `:undo` | undo the last action, or the last three |
 | `<Esc>` | drop the selection, a count or a waiting `d` |
 | `:2,8delete` `:%archive` `:.,$move Junk` | act on a range of rows |
 
@@ -119,8 +121,16 @@ selection to use the menu on all of it.
 
 Delete moves messages to the trash folder. Inside the trash, or without a
 trash folder, it only marks them; they are shown dimmed and the next sync
-removes them for good. There is no undo in the list, and a sync applies
-deletions and moves to the server.
+removes them for good.
+
+`u` undoes deleting, archiving, moving, flagging and toggling read, one
+action at a time however many messages it covered, up to 100 actions while
+epis runs. There is no redo. Before a sync, undo gives files their old
+names back, so the server never notices. After a sync, flag and read changes
+can still be undone and are uploaded by the next one, but messages that the
+sync has already deleted or moved cannot be restored with `u`: those moved
+to a folder such as the trash are still there. Undo waits while a sync
+started from epis is running.
 
 If mail arrives while you are selecting and the selection would then cover
 different messages, it is cleared. A sync or other background command that
@@ -207,7 +217,10 @@ set in `[theme]`, and `include` loads a theme file (see `themes/`).
 - **Sync:** IMAP sync merges flags three ways against the last synced state
   stored in `.epis-state`. Local deletions, moves and new messages (such as
   sent copies and drafts) are uploaded on the next sync. File names carry
-  the UID as `,U=<uid>`, as with mbsync.
+  the UID as `,U=<uid>`, as with mbsync. A message whose UID is gone from
+  the server is deleted locally only if the last sync recorded that UID.
+  Otherwise, as when an undo brings back a file after a sync saw it deleted,
+  it is kept and uploaded again.
 - **Authentication:** PLAIN, LOGIN, CRAM-MD5, SCRAM-SHA-1, SCRAM-SHA-256,
   XOAUTH2 and OAUTHBEARER, plus the IMAP `LOGIN` command. OAuth2 uses the
   authorization code flow with PKCE and a loopback redirect.

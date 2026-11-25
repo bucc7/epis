@@ -1,0 +1,4 @@
+epis
+*.o
+gui/*.inc
+gui/xdg-*.[ch]

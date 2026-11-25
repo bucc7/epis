@@ -508,11 +508,23 @@ static void text_view(struct win *w, int li)
 			   .childGap = 6,
 			   .layoutDirection = CLAY_TOP_TO_BOTTOM },
 	       .backgroundColor = col(C_PANEL) }) {
-		if (w->title)
-			CLAY_TEXT(cstr(w->title), CLAY_TEXT_CONFIG({
-				.fontId = FONT_BOLD,
-				.fontSize = cfg.font_size + 3,
-				.textColor = col(C_ACCENT) }));
+		if (w->title) {
+			/*
+			 * a title that is a command line is cut short: its long
+			 * paths would otherwise widen the window
+			 */
+			int cut = w->title[0] == '|';
+
+			CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
+						CLAY_SIZING_FIT(0) } },
+			       .clip = { .horizontal = cut } }) {
+				CLAY_TEXT(cstr(w->title), CLAY_TEXT_CONFIG({
+					.fontId = FONT_BOLD,
+					.fontSize = cfg.font_size + 3,
+					.textColor = col(C_ACCENT),
+					.wrapMode = cut ? 2 : 0 }));
+			}
+		}
 		if (w->hlen && w->type == W_MSG)
 			CLAY_TEXT(((Clay_String){ false, (int32_t)w->hlen,
 						  w->doc }),

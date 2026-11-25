@@ -148,6 +148,13 @@ void undo_commit(void);
 int undo_last(void (*moved)(const char *from, const char *to), int *done,
 	      int *failed, char **first);
 
+/* piping messages to shell commands (pipe.c) */
+FILE *pipe_input(struct msginfo *m, int n);
+char *pipe_output(const char *s);
+const char *pipe_argument(const char *line);
+void pipe_remember(const char *cmd);
+const char *pipe_recall(int i);
+
 /* application (ui.c) */
 enum { W_LIST, W_MSG, W_COMPOSE, W_TEXT, W_WIZARD };
 
@@ -245,6 +252,8 @@ struct app {
 	int native_menu;
 	/* the count typed before the list command that is running */
 	int count;
+	/* how far back in the pipe history the command line is */
+	int recall;
 };
 
 extern struct app app;

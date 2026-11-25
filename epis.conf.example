@@ -77,6 +77,8 @@ global <C-s> = sync
 spam = move Junk
 inbox = folder INBOX
 notify = !notify-send "epis" "sync done"
+# pipe sends the message, or the selection, to a shell command
+am = pipe git -C ~/src/project am -3 --empty=drop
 # feedkeys replays keys, ; separates commands
 toptwo = top; feedkeys jj
 

@@ -19,7 +19,9 @@
 struct app app;
 
 enum { PK_FOLDER, PK_MESSAGE, PK_COMMAND, PK_MOVE };
-enum { J_SYNC, J_LLM, J_DRAFT, J_AUTOCONF, J_SHELL };
+enum { J_SYNC, J_LLM, J_DRAFT, J_AUTOCONF, J_SHELL, J_PIPE };
+/* the most output of a command that is kept */
+#define MAXOUTPUT (4 << 20)
 
 struct job {
 	pid_t pid;
@@ -108,6 +110,7 @@ static const struct bind defaults[] = {
 	{ "mail", "m", "move" },
 	{ "mail", "s", "flag" },
 	{ "mail", "n", "toggle_read" },
+	{ "mail", "|", "pipe" },
 	{ "mail", "u", "undo" },
 	{ "compose", "ZZ", "send" },
 	{ "compose", "<C-j>", "next_field" },
@@ -143,6 +146,7 @@ static const struct menu_item m_msg[] = {
 	{ "Forward", "forward" }, { "Toggle read", "toggle_read" },
 	{ "Toggle flag", "flag" }, { "Move to...", "move" },
 	{ "Archive", "archive" }, { "Delete", "delete" }, { "Undo", "undo" },
+	{ "Pipe to command...", "pipe" },
 	{ "Summarize (AI)", "summarize" }, { NULL, NULL }
 };
 
@@ -171,8 +175,8 @@ const struct menu_item ctx_items[] = {
 	{ "Reply", "reply" }, { "Reply all", "reply_all" },
 	{ "Forward", "forward" }, { "Toggle read", "toggle_read" },
 	{ "Toggle flag", "flag" }, { "Move to...", "move" },
-	{ "Delete", "delete" }, { "Summarize (AI)", "summarize" },
-	{ NULL, NULL }
+	{ "Delete", "delete" }, { "Pipe to command...", "pipe" },
+	{ "Summarize (AI)", "summarize" }, { NULL, NULL }
 };
 
 void ui_status(int err, const char *fmt, ...)
@@ -823,29 +827,42 @@ static void send_compose(int save_draft)
 	draft_free(&d);
 }
 
-static void job_start(int kind, char *const argv[], struct win *w,
-		      const char *title)
+/*
+ * run a program in the background, collecting its output. in is a file
+ * descriptor to give it as input, or -1 for none.
+ */
+static int job_spawn(int kind, const char *program, char *const argv[],
+		     int in, struct win *w, const char *title)
 {
 	int p[2];
 	struct job *j;
 	pid_t pid;
 
 	if (njobs == 8 || pipe(p))
-		return;
+		return -1;
 	pid = fork();
 	if (pid < 0) {
 		close(p[0]);
 		close(p[1]);
-		return;
+		return -1;
 	}
 	if (!pid) {
-		int null = open("/dev/null", O_RDONLY);
-
-		dup2(null, 0);
+		if (in < 0)
+			in = open("/dev/null", O_RDONLY);
+		dup2(in, 0);
 		dup2(p[1], 1);
 		dup2(p[1], 2);
 		close(p[0]);
-		execv(self, argv);
+		if (kind == J_PIPE) {
+			/*
+			 * without a terminal a command cannot stop to ask
+			 * for something that would never be seen
+			 */
+			setsid();
+			setenv("PAGER", "cat", 1);
+			setenv("GIT_PAGER", "cat", 1);
+		}
+		execv(program, argv);
 		_exit(127);
 	}
 	close(p[1]);
@@ -857,6 +874,14 @@ static void job_start(int kind, char *const argv[], struct win *w,
 	j->kind = kind;
 	j->w = w;
 	j->title = title ? xstrdup(title) : NULL;
+	return 0;
+}
+
+/* run epis itself as a background job */
+static void job_start(int kind, char *const argv[], struct win *w,
+		      const char *title)
+{
+	job_spawn(kind, self, argv, -1, w, title);
 }
 
 static int win_alive(struct node *n, struct win *w)
@@ -865,6 +890,48 @@ static int win_alive(struct node *n, struct win *w)
 }
 
 static void wizard_fill(const char *out);
+static void split(int dir, struct win *w);
+static void set_text(struct win *w, const char *hdr, const char *body);
+
+/*
+ * show what a piped command said. A short success fits the status line;
+ * anything else gets a window of its own.
+ */
+static void pipe_done(const char *cmd, const char *raw, int status)
+{
+	char *out = pipe_output(raw), *body;
+	struct node *at;
+	struct win *w, *was = focused();
+
+	if (!status && !strchr(out, '\n')) {
+		if (*out)
+			ui_status(0, "%s", out);
+		else
+			ui_status(0, "piped to %s", cmd);
+	} else if (app.nleaves >= 8) {
+		const char *last = strrchr(out, '\n');
+
+		ui_status(status != 0, "exit status %d: %s", status,
+			  last ? last + 1 : out);
+	} else {
+		w = win_new(W_TEXT);
+		w->title = xasprintf("| %s", cmd);
+		body = xasprintf("%s%sexit status %d", out, *out ? "\n\n" :
+				 "", status);
+		set_text(w, NULL, body);
+		free(body);
+		at = app.focus;
+		split('v', w);
+		/* a message being written keeps the keyboard */
+		if (was && was->type == W_COMPOSE && at->a)
+			app.focus = at->a;
+		if (status)
+			ui_status(1, "command failed with status %d", status);
+		else
+			ui_status(0, "command finished");
+	}
+	free(out);
+}
 
 static void job_done(struct job *j, int status)
 {
@@ -898,6 +965,11 @@ static void job_done(struct job *j, int status)
 			ui_status(1, "AI draft failed");
 		}
 		break;
+	case J_PIPE:
+		pipe_done(j->title, out, status);
+		folders_load();
+		reload_lists(app.root);
+		break;
 	case J_AUTOCONF:
 		wizard_fill(out);
 		ui_status(0, "server settings detected, check them and save");
@@ -930,7 +1002,8 @@ static void jobs_poll(void)
 		int st;
 
 		while ((n = read(j->fd, tmp, sizeof(tmp))) > 0)
-			buf_add(&j->out, tmp, n);
+			if (j->out.len < MAXOUTPUT)
+				buf_add(&j->out, tmp, n);
 		if (n == 0 || (n < 0 && errno != EAGAIN)) {
 			close(j->fd);
 			waitpid(j->pid, &st, 0);
@@ -1072,7 +1145,7 @@ static const char *cmd_names[] = {
 	"sidebar", "menubar", "menu", "summarize", "ask", "ai_draft", "reload",
 	"help", "cmdline", "screenshot", "feedkeys", "copy", "cut", "paste",
 	"select_all", "visual", "visual_line", "set", "nohlsearch",
-	"delete_motion", "undo", NULL
+	"delete_motion", "undo", "pipe", NULL
 };
 
 static void find_folder(int kind)
@@ -1463,6 +1536,65 @@ static void msg_undo(int times)
 	free(first);
 }
 
+/*
+ * send the messages at the cursor or in the selection to a shell command.
+ * Without a command, ask for one.
+ */
+static void msg_pipe(const char *cmd)
+{
+	struct win *w = focused();
+	char *argv[] = { "/bin/sh", "-c", NULL, NULL };
+	struct msginfo *m;
+	char **v;
+	FILE *in;
+	int n, i, lo = 0, hi, listed;
+
+	if (!w || (w->type != W_LIST && w->type != W_MSG)) {
+		ui_status(1, "no message to pipe");
+		return;
+	}
+	if (!cmd || !*cmd) {
+		app.cmdline = 1;
+		app.recall = -1;
+		ed_set(&app.cmd, w->type == W_LIST && w->visual ?
+		       "'<,'>pipe " : "pipe ");
+		return;
+	}
+	if (!(n = targets(w, &v))) {
+		ui_status(1, "no message selected");
+		return;
+	}
+	/* a list knows the subjects and dates that decide the order */
+	listed = w->type == W_LIST;
+	if (listed)
+		list_range(w, &lo, &hi);
+	m = xcalloc(n, sizeof(*m));
+	for (i = 0; i < n; i++) {
+		if (listed)
+			m[i] = w->msgs[w->visual ? lo + i : w->sel];
+		m[i].path = v[i];
+	}
+	pipe_remember(cmd);
+	argv[2] = (char *)cmd;
+	in = pipe_input(m, n);
+	if (!in) {
+		ui_status(1, "cannot read the message");
+	} else if (job_spawn(J_PIPE, "/bin/sh", argv, fileno(in), NULL, cmd)) {
+		ui_status(1, "too many commands are running");
+	} else {
+		if (n > 1)
+			ui_status(0, "piping %d messages to %s", n, cmd);
+		else
+			ui_status(0, "piping to %s", cmd);
+		if (w->visual)
+			end_selection(w, 0);
+	}
+	if (in)
+		fclose(in);
+	free(m);
+	free_paths(v, n);
+}
+
 static void move_sel(struct win *w, int d)
 {
 	if (!w || !w->nmsgs)
@@ -1499,7 +1631,6 @@ static void shell(const char *cmdline)
 	const char *p = cur_path(w);
 	struct buf b = { 0 };
 	char *argv[] = { "/bin/sh", "-c", NULL, NULL };
-	char saved[4096];
 
 	for (; *cmdline; cmdline++) {
 		if (cmdline[0] == '%' && cmdline[1] == 'f') {
@@ -1511,10 +1642,7 @@ static void shell(const char *cmdline)
 	}
 	buf_add(&b, "", 0);
 	argv[2] = b.p;
-	memcpy(saved, self, sizeof(saved));
-	strcpy(self, "/bin/sh");
-	job_start(J_SHELL, argv, NULL, NULL);
-	memcpy(self, saved, sizeof(saved));
+	job_spawn(J_SHELL, "/bin/sh", argv, -1, NULL, NULL);
 	buf_free(&b);
 }
 
@@ -1653,7 +1781,8 @@ void ui_command(const char *line)
 		shell(line + 1);
 		return;
 	}
-	if (strchr(line, ';')) {
+	/* the shell gets everything after "|", semicolons included */
+	if (strchr(line, ';') && !pipe_argument(line)) {
 		char *dup = xstrdup(line), *s, *save = NULL;
 
 		for (s = strtok_r(dup, ";", &save); s;
@@ -1677,13 +1806,17 @@ void ui_command(const char *line)
 		for (i = 0; i < cfg.nalias; i++)
 			if (!strcmp(name, cfg.alias[i].name))
 				break;
-		if (i == cfg.nalias && !list_is_action(name)) {
+		if (i == cfg.nalias && *line != '|' && !list_is_action(name)) {
 			w->sel = sel;
 			w->visual = visual;
 			w->anchor = anchor;
 			ui_status(1, "%s does not take a range", name);
 			return;
 		}
+	}
+	if (*line == '|') {
+		msg_pipe(line + 1 + strspn(line + 1, " "));
+		return;
 	}
 	snprintf(name, sizeof(name), "%.*s", (int)strcspn(line, " "), line);
 	arg = line + strlen(name);
@@ -1889,6 +2022,8 @@ void ui_command(const char *line)
 		free(p);
 	} else if (!strcmp(name, "feedkeys") && arg) {
 		feedkeys(arg);
+	} else if (!strcmp(name, "pipe")) {
+		msg_pipe(arg);
 	} else if (!strcmp(name, "undo")) {
 		msg_undo(app.count ? app.count : 1);
 	} else if (!strcmp(name, "delete_motion")) {
@@ -1896,6 +2031,7 @@ void ui_command(const char *line)
 		ui_status(1, "delete_motion works as a key in a list");
 	} else if (!strcmp(name, "cmdline")) {
 		app.cmdline = 1;
+		app.recall = -1;
 		/* as in vim, a command typed over a selection acts on it */
 		ed_set(&app.cmd, w && w->type == W_LIST && w->visual ?
 		       "'<,'>" : "");
@@ -2175,6 +2311,23 @@ static void key_tok(const char *tok, const char *text)
 	if (app.cmdline) {
 		if (!strcmp(tok, "<BS>") && !ed_len(&app.cmd)) {
 			app.cmdline = 0;
+			return;
+		}
+		if (!strcmp(tok, "<Up>") || !strcmp(tok, "<Down>")) {
+			char *line = ed_text(&app.cmd);
+			const char *at = pipe_argument(line), *old;
+			int i = app.recall + (tok[1] == 'U' ? 1 : -1);
+
+			if (at && (old = pipe_recall(i))) {
+				char *s = xasprintf("%.*s%s",
+						    (int)(at - line), line,
+						    old);
+
+				ed_set(&app.cmd, s);
+				app.recall = i;
+				free(s);
+			}
+			free(line);
 			return;
 		}
 		r = ed_key(&app.cmd, tok, ev->text, 0);

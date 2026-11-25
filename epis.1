@@ -83,6 +83,10 @@ reply, reply all, forward, archive, move, flag, toggle read
 undo the last delete, archive, move or flag change; a count undoes several.
 Messages that a sync has already deleted or moved cannot be restored
 .TP
+.B |
+pipe the raw message, or the selected messages, to a shell command (see
+.BR PIPING )
+.TP
 .BR dd ", " 3dd ", " dj ", " dG
 delete this message, several, or up to where a motion goes. In a message,
 .B dd
@@ -115,6 +119,28 @@ copy, cut and paste; Cmd\-C, Cmd\-X and Cmd\-V also work on macOS
 command line, e.g. :move Archive, :attach ~/file.pdf, :send, :w, :q,
 :!shell command (%f is the message file), :feedkeys keys,
 :screenshot file.ppm
+.SH PIPING
+.B |
+or
+.BI :pipe " command"
+runs
+.I command
+with
+.B /bin/sh \-c
+in the directory epis was started from, with the message as its input,
+headers included and with Unix line endings. The rest of the line belongs to
+the shell. Several messages form an mbox, ordered by their
+.B [PATCH n/m]
+numbers or else oldest first, so that
+.B git \-C ~/src/project am \-3
+can commit a patch series; add
+.B \-\-empty=drop
+if it has a cover letter. The command has no terminal.
+.B <Up>
+and
+.B <Down>
+recall earlier commands. Output of more than one line, and any failure, opens
+in a new window.
 .SH EDITOR
 The message editor emulates vim: normal, insert, replace, visual (including
 block) and command line modes; motions, operators and text objects with

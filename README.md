@@ -89,6 +89,7 @@ The leader key is Space by default (`leader` option).
 | `dd` | delete (in the list and in a message) |
 | `a` `m` `s` `n` | archive, move, flag, toggle read |
 | `u` | undo |
+| `\|` | pipe the message to a shell command |
 | `v` `V` in the list | select several messages |
 | `<C-w>v` `<C-w>s` `<C-w>hjkl` `<C-w>q` `<C-w>o` | window management |
 | `<leader>c` `<leader>s` | compose, synchronize |
@@ -152,6 +153,50 @@ The mode name in the status bar has a colour for each mode, set by the
 unset, normal and setup follow `accent`, and `mode_vline` and `mode_vblock`
 follow `mode_visual`. `search` colours search matches.
 
+### Piping messages and applying patches
+
+Press `|` on a message, in the list or open, and type a shell command. It
+gets the raw message, headers included, with Unix line endings. This is what
+`git am` reads, so you can review a patch and apply it from epis:
+
+| keys | effect |
+| --- | --- |
+| `\|git -C ~/src/project am -3` | commit the patch in this message |
+| `V` `jj` `\|git -C ~/src/project am -3` | commit a series of three |
+| `\|git -C ~/src/project apply` | change the files without committing |
+| `:%pipe grep ^Subject:` `:2,4\|wc` | pipe a range of rows |
+| `\|` `<Up>` `<Down>` | recall earlier commands |
+
+`git am` keeps the author, date and commit message, and decodes
+quoted-printable and base64 mail. `git apply` reads only the diff, does not
+decode the mail and has no `-m` option.
+
+Several messages are sent as one mbox. If their subjects are numbered like
+`[PATCH 2/5]`, they go in that order; otherwise the oldest goes first. A
+series with a cover letter (`0/5`) needs `git am --empty=drop`.
+
+The command runs in the background with `/bin/sh -c`, in the directory epis
+was started from, so name the repository with `-C` or `cd`. Everything after
+`|` or `pipe` belongs to the shell, including `;` and `|`. It has no
+terminal, so it cannot ask questions or open a pager or an editor. A
+successful command that prints at most one line reports in the status bar;
+otherwise its output and exit status open in a new window (`<C-w>q` closes
+it). If `git am` stops on a conflict, finish or `git am --abort` it in a
+terminal.
+
+To keep a command you use often:
+
+```
+[commands]
+am = pipe git -C ~/src/project am -3 --empty=drop
+
+[keys]
+mail A = am
+```
+
+This binds `A` to apply the message or selection. While text is selected in a
+message, `|` still pipes the whole message.
+
 ### The editor
 
 The composer uses vim keys by default (`vim_edit = no` turns them off). The
@@ -161,7 +206,7 @@ defaults (`Y` yanks a line, `startofline`, `nojoinspaces`).
 | area | supported |
 | --- | --- |
 | modes | normal, insert, replace, visual (`v` `V` `<C-v>`), command line, search |
-| motions | `hjkl` `w b e ge` `W B E gE` `0 ^ $ g_ \|` `gg G H M L` `f F t T ; ,` `% { } ( )` `+ - _` `gj gk g0 g$`, counts and `N%` |
+| motions | `hjkl` `w b e ge` `W B E gE` `0 ^ $ g_ \|` (composer only) `gg G H M L` `f F t T ; ,` `% { } ( )` `+ - _` `gj gk g0 g$`, counts and `N%` |
 | operators | `d c y > < gu gU g~ gq gw`, doubled for lines, with any motion or text object |
 | text objects | `iw aw iW aW is as ip ap`, quotes, `() [] {} <>` (`b`, `B`) |
 | editing | `x X s S r R D C Y J gJ p P gp gP o O i I a A gI ~ <C-a> <C-x>` |
@@ -196,7 +241,7 @@ is selected.
 
 You can rebind every key in `[keys]` and define your own commands in
 `[commands]`. A command can chain others with `;`, run a shell command with
-`!`, or replay keys with `feedkeys`. Colours, corner radius and padding are
+`!`, pipe the message with `pipe`, or replay keys with `feedkeys`. Colours, corner radius and padding are
 set in `[theme]`, and `include` loads a theme file (see `themes/`).
 
 ## Design notes

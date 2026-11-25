@@ -162,7 +162,8 @@ int list_is_action(const char *cmd)
 {
 	return !strcmp(cmd, "delete") || !strcmp(cmd, "d") ||
 	    !strcmp(cmd, "archive") || !strcmp(cmd, "move") ||
-	    !strcmp(cmd, "flag") || !strcmp(cmd, "toggle_read");
+	    !strcmp(cmd, "flag") || !strcmp(cmd, "toggle_read") ||
+	    !strcmp(cmd, "pipe");
 }
 
 static void run(const char *cmd, int n)

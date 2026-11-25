@@ -2043,26 +2043,38 @@ void hit_add(Clay_ElementId id, int kind, int a, int b)
 	app.hits[app.nhits++].b = b;
 }
 
-const char *editor_ctx_mode(void)
+/* name of the current mode; *color gets the index of its theme colour */
+const char *editor_ctx_mode(int *color)
 {
 	struct win *w = focused();
+	struct editor *e = NULL;
 
-	if (app.wizard)
+	if (app.wizard) {
+		*color = C_MODE_SETUP;
 		return "SETUP";
-	if (app.pick)
-		return "FIND";
-	if (app.cmdline)
-		return "COMMAND";
-	if (w && w->type == W_COMPOSE) {
-		switch (w->f[w->field].mode) {
-		case ED_INSERT:
-			return "INSERT";
-		case ED_VISUAL:
-			return "VISUAL";
-		case ED_VLINE:
-			return "V-LINE";
-		}
 	}
+	if (app.pick) {
+		*color = C_MODE_FIND;
+		return "FIND";
+	}
+	if (app.cmdline) {
+		*color = C_MODE_COMMAND;
+		return "COMMAND";
+	}
+	if (w && w->type == W_COMPOSE)
+		e = &w->f[w->field];
+	switch (e ? e->mode : ED_NORMAL) {
+	case ED_INSERT:
+		*color = C_MODE_INSERT;
+		return "INSERT";
+	case ED_VISUAL:
+		*color = C_MODE_VISUAL;
+		return "VISUAL";
+	case ED_VLINE:
+		*color = C_MODE_VLINE;
+		return "V-LINE";
+	}
+	*color = C_MODE_NORMAL;
 	return "NORMAL";
 }
 

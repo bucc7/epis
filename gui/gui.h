@@ -238,7 +238,7 @@ void hit_add(Clay_ElementId id, int kind, int a, int b);
 Clay_String cstr(const char *s);
 Clay_String fstr(const char *fmt, ...);
 Clay_Color col(int c);
-const char *editor_ctx_mode(void);
+const char *editor_ctx_mode(int *color);
 int wizard_save(void);
 int wizard_detect(void);
 

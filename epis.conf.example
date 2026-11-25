@@ -49,6 +49,10 @@ save_sent = no
 [theme]
 # include = ~/.config/epis/themes/light.theme
 accent = #89b4fa
+# colour of the mode name in the status bar; normal follows accent if unset
+mode_insert = #a6e3a1
+mode_visual = #cba6f7
+# also: mode_normal, mode_vline, mode_command, mode_find, mode_setup
 radius = 6
 
 [keys]

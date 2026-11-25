@@ -12,14 +12,18 @@ struct config cfg;
 const char *color_names[C_COUNT] = {
 	"bg", "fg", "panel", "border", "accent", "select_bg", "select_fg",
 	"unread", "dim", "menu_bg", "menu_fg", "status_bg", "status_fg",
-	"error", "flagged", "quote", "cursor"
+	"error", "flagged", "quote", "cursor", "mode_normal", "mode_insert",
+	"mode_visual", "mode_vline", "mode_command", "mode_find",
+	"mode_setup"
 };
 
 static const uint32_t default_colors[C_COUNT] = {
 	0x1e1e2eff, 0xcdd6f4ff, 0x181825ff, 0x313244ff, 0x89b4faff,
 	0x45475aff, 0xf5e0dcff, 0xf9e2afff, 0x7f849cff, 0x11111bff,
 	0xcdd6f4ff, 0x313244ff, 0xcdd6f4ff, 0xf38ba8ff, 0xfab387ff,
-	0xa6e3a1ff, 0xf5e0dcff
+	0xa6e3a1ff, 0xf5e0dcff,
+	/* modes; 0 follows another colour, see color_fallbacks() */
+	0, 0xa6e3a1ff, 0xcba6f7ff, 0, 0xfab387ff, 0x94e2d5ff, 0
 };
 
 static const char *auth_names[] = {
@@ -345,6 +349,20 @@ static int parse_file(const char *path, int theme_only)
 	return 0;
 }
 
+/* give the colours that were left unset the one they follow */
+static void color_fallbacks(void)
+{
+	static const int follow[][2] = {
+		{ C_MODE_NORMAL, C_ACCENT }, { C_MODE_VLINE, C_MODE_VISUAL },
+		{ C_MODE_SETUP, C_ACCENT }
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(follow) / sizeof(*follow); i++)
+		if (!cfg.color[follow[i][0]])
+			cfg.color[follow[i][0]] = cfg.color[follow[i][1]];
+}
+
 /* load defaults and then the configuration file at path */
 int config_load(const char *path)
 {
@@ -363,7 +381,9 @@ int config_load(const char *path)
 	cfg.llm_max_tokens = 16000;
 	for (i = 0; i < C_COUNT; i++)
 		cfg.color[i] = default_colors[i];
-	if (parse_file(cfg.path, 0))
+	i = parse_file(cfg.path, 0);
+	color_fallbacks();
+	if (i)
 		return -1;
 	for (i = 0; i < cfg.nacc; i++) {
 		struct account *a = &cfg.acc[i];

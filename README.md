@@ -91,6 +91,11 @@ The leader key is Space by default (`leader` option).
 | `<leader>a`, `:ask`, `:ai_draft` | summarize, ask, or draft a reply with the LLM |
 | `:` | command line (`:move Archive`, `:attach FILE`, `:send`, `:w`, `:q`, `:!cmd %f`) |
 
+The mode name in the status bar has a colour for each mode, set by the
+`mode_normal`, `mode_insert`, `mode_visual`, `mode_vline`, `mode_command`,
+`mode_find` and `mode_setup` theme keys. If unset, normal and setup follow
+`accent` and `mode_vline` follows `mode_visual`.
+
 The composer uses vim keys by default (`vim_edit = no` turns them off). It
 supports motions, counts, operators (`d`, `c`, `y`) with motions, visual
 mode, `p`, `u`, `r`, `J`, `o`, and `ZZ` or `:send` to send.

@@ -653,6 +653,8 @@ static void sidebar(void)
 static void statusbar(void)
 {
 	struct win *w = app.focus ? app.focus->w : NULL;
+	int color;
+	const char *mode = editor_ctx_mode(&color);
 
 	CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
 				       CLAY_SIZING_FIT(0) },
@@ -660,10 +662,9 @@ static void statusbar(void)
 			   .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
 	       .backgroundColor = col(C_STATUS_BG) }) {
 		CLAY({ .layout = { .padding = { 8, 8, 1, 1 } },
-		       .backgroundColor = col(C_ACCENT),
+		       .backgroundColor = col(color),
 		       .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
-			CLAY_TEXT(cstr(editor_ctx_mode()), txt(FONT_BOLD, C_BG,
-							       2));
+			CLAY_TEXT(cstr(mode), txt(FONT_BOLD, C_BG, 2));
 		}
 		if (app.keys[0])
 			CLAY_TEXT(cstr(app.keys), txt(FONT_MONO, C_FLAGGED, 2));

@@ -90,7 +90,7 @@ enum {
 	C_UNREAD, C_DIM, C_MENU_BG, C_MENU_FG, C_STATUS_BG, C_STATUS_FG,
 	C_ERROR, C_FLAGGED, C_QUOTE, C_CURSOR, C_MODE_NORMAL, C_MODE_INSERT,
 	C_MODE_VISUAL, C_MODE_VLINE, C_MODE_COMMAND, C_MODE_FIND,
-	C_MODE_SETUP, C_COUNT
+	C_MODE_SETUP, C_MODE_REPLACE, C_MODE_VBLOCK, C_SEARCH, C_COUNT
 };
 
 struct keybind {
@@ -108,6 +108,7 @@ struct config {
 	int font_size, radius, padding;
 	float scale;
 	int vim_edit, menubar, clipboard;
+	int number, relativenumber, textwidth, hlsearch;
 	char *leader;
 	char *editor_cmd;
 	uint32_t color[C_COUNT];

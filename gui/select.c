@@ -284,6 +284,7 @@ static void start(struct win *w, size_t anchor, size_t cur, int mode)
 {
 	sel_clear(w);
 	ed_init(&w->view, w->doc, 0);
+	w->view.readonly = 1;
 	w->view.mode = mode;
 	w->view.vstart = anchor;
 	w->view.cur = cur;
@@ -305,7 +306,7 @@ void sel_begin(struct win *w, int mode)
 			break;
 		}
 	start(w, off, off, mode);
-	w->view.want = off - ed_line_start(&w->view, off);
+	w->view.want = ed_col(&w->view, off);
 	w->follow = 1;
 }
 
@@ -325,35 +326,49 @@ void sel_all(struct win *w)
 /* the selected text of a message window, or NULL */
 char *sel_text(struct win *w)
 {
-	size_t a, b;
-	char *s;
+	return w->view.b ? ed_selected_text(&w->view) : NULL;
+}
 
-	if (!w->view.b || !ed_selection(&w->view, &a, &b))
-		return NULL;
-	if (b > w->doclen)
-		b = w->doclen;
-	s = xmalloc(b - a + 1);
-	ed_copy(&w->view, a, b, s);
-	return s;
+/* send a key that moves the cursor to the read-only editor */
+static void move_key(struct win *w, const char *tok, const char *text)
+{
+	const char *msg;
+	int error;
+
+	ed_key(&w->view, tok, text, 1);
+	if ((msg = vim_message(&error)))
+		ui_status(error, "%s", msg);
+	if (w->view.mode != ED_VISUAL && w->view.mode != ED_VLINE &&
+	    w->view.mode != ED_VBLOCK)
+		sel_clear(w);
+	w->follow = 1;
 }
 
 /*
- * handle a key while text is selected: vim motions move the cursor, y
- * copies. Only motions reach the editor, so the text cannot change.
- * Returns 0 for keys that keep their usual meaning.
+ * handle a key while text is selected: vim motions and text objects move
+ * the selection, y copies. The editor is read only, so the text cannot
+ * change. Returns 0 for keys that keep their usual meaning.
  */
 int sel_key(struct win *w, const char *tok, const char *text)
 {
 	static const char *motions[] = {
-		"h", "j", "k", "l", "w", "b", "e", "0", "^", "$", "G", "g",
-		"{", "}", "<Left>", "<Right>", "<Up>", "<Down>", "<Home>",
-		"<End>", "1", "2", "3", "4", "5", "6", "7", "8", "9", NULL
+		"h", "j", "k", "l", "w", "b", "e", "W", "B", "E", "0", "^",
+		"$", "G", "g", "{", "}", "(", ")", "%", "f", "F", "t", "T",
+		";", ",", "i", "a", "/", "?", "n", "N", "*", "#", "'", "`",
+		"H", "M", "L", "+", "-", "_", "o", "<Left>", "<Right>",
+		"<Up>", "<Down>", "<Home>", "<End>", "1", "2", "3", "4", "5",
+		"6", "7", "8", "9", NULL
 	};
 	struct editor *e = &w->view;
-	int i, mode;
+	int i;
 
 	if (w->type != W_MSG && w->type != W_TEXT)
 		return 0;
+	/* the rest of a command such as "fx" or "/text" */
+	if (ed_pending(e)) {
+		move_key(w, tok, text);
+		return 1;
+	}
 	if (!strcmp(tok, "<Esc>") || !strcmp(tok, "q")) {
 		sel_clear(w);
 		return 1;
@@ -364,25 +379,12 @@ int sel_key(struct win *w, const char *tok, const char *text)
 		return 1;
 	}
 	if (!strcmp(tok, "v") || !strcmp(tok, "V")) {
-		mode = tok[0] == 'v' ? ED_VISUAL : ED_VLINE;
-		if (e->mode == mode)
-			sel_clear(w);
-		else
-			e->mode = mode;
-		return 1;
-	}
-	if (!strcmp(tok, "o")) {
-		size_t t = e->cur;
-
-		e->cur = e->vstart;
-		e->vstart = t;
-		w->follow = 1;
+		move_key(w, tok, text);
 		return 1;
 	}
 	for (i = 0; motions[i]; i++)
 		if (!strcmp(tok, motions[i])) {
-			ed_key(e, tok, text, 1);
-			w->follow = 1;
+			move_key(w, tok, text);
 			return 1;
 		}
 	return 0;

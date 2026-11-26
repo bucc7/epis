@@ -7,6 +7,7 @@
 #endif
 
 #include "clay.h"
+#include "editor.h"
 #include "epis.h"
 
 /* platform (wayland.c, x11.c or cocoa.c) */
@@ -108,44 +109,6 @@ void font_draw(int font, int size, float x, float y, const char *s, int len,
 	       uint32_t col);
 int font_flush(void);
 
-/* text editor with vim emulation (edit.c) */
-enum { ED_NORMAL, ED_INSERT, ED_VISUAL, ED_VLINE };
-enum { ED_UNHANDLED, ED_OK, ED_ESCAPE, ED_ENTER };
-
-struct editor {
-	char *b;
-	size_t cap, gs, ge;
-	size_t cur, vstart, want;
-	int mode, single, top;
-	/* set by ed_select_all: the next typed text replaces everything */
-	int replace;
-	char pend[16];
-	int count;
-	struct {
-		char *text;
-		size_t cur;
-	} undo[64];
-	int nundo;
-};
-
-void ed_init(struct editor *e, const char *text, int single);
-void ed_free(struct editor *e);
-void ed_set(struct editor *e, const char *text);
-size_t ed_len(struct editor *e);
-char ed_at(struct editor *e, size_t i);
-char *ed_text(struct editor *e);
-void ed_insert(struct editor *e, const char *s, size_t n);
-int ed_key(struct editor *e, const char *key, const char *text, int vim);
-size_t ed_line_start(struct editor *e, size_t p);
-size_t ed_line_end(struct editor *e, size_t p);
-int ed_line_of(struct editor *e, size_t p);
-void ed_copy(struct editor *e, size_t a, size_t b, char *out);
-int ed_selection(struct editor *e, size_t *a, size_t *b);
-void ed_remove(struct editor *e, size_t a, size_t b);
-void ed_paste(struct editor *e, const char *s);
-void ed_select_all(struct editor *e);
-char *ed_clipboard(void);
-
 /* selection in the message view (select.c) */
 struct win;
 void sel_layout(Clay_RenderCommandArray *cmds);
@@ -160,6 +123,37 @@ char *sel_text(struct win *w);
 void sel_press(struct win *w, float x, float y);
 void sel_drag(float x, float y);
 void sel_release(void);
+
+/* counts, operators and visual mode in the message list (list.c) */
+struct list_mark {
+	char *cursor, *anchor, **selected;
+	int n;
+};
+
+void list_reset(void);
+const char *list_showcmd(struct win *w);
+void list_range(const struct win *w, int *lo, int *hi);
+void list_select(struct win *w, int anchor, int cursor);
+int list_same(const char *a, const char *b);
+void list_save(const struct win *w, struct list_mark *m);
+void list_restore(struct win *w, struct list_mark *m);
+int list_is_action(const char *cmd);
+void list_run(struct win *w, const char *cmd);
+int list_key(struct win *w, const char *tok, int bound);
+int list_command_range(struct win *w, const char **line);
+
+/* undo for actions on messages (undo.c) */
+void undo_add(const char *before, const char *after, int flag);
+void undo_commit(void);
+int undo_last(void (*moved)(const char *from, const char *to), int *done,
+	      int *failed, char **first);
+
+/* piping messages to shell commands (pipe.c) */
+FILE *pipe_input(struct msginfo *m, int n);
+char *pipe_output(const char *s);
+const char *pipe_argument(const char *line);
+void pipe_remember(const char *cmd);
+const char *pipe_recall(int i);
 
 /* application (ui.c) */
 enum { W_LIST, W_MSG, W_COMPOSE, W_TEXT, W_WIZARD };
@@ -177,6 +171,8 @@ struct win {
 	char *acc, *folder;
 	struct msginfo *msgs;
 	int nmsgs, sel, top, vis;
+	/* visual mode in the list: the rows from anchor to sel */
+	int visual, anchor;
 	char *path, *title;
 	/* the shown text; its first hlen bytes are the message headers */
 	char *doc;
@@ -254,6 +250,10 @@ struct app {
 	int nleaves;
 	float scale;
 	int native_menu;
+	/* the count typed before the list command that is running */
+	int count;
+	/* how far back in the pipe history the command line is */
+	int recall;
 };
 
 extern struct app app;
@@ -271,6 +271,7 @@ Clay_String cstr(const char *s);
 Clay_String fstr(const char *fmt, ...);
 Clay_Color col(int c);
 const char *editor_ctx_mode(int *color);
+struct editor *ui_vim_editor(void);
 Clay_ElementId wid(const char *base, int leaf, int i);
 int wizard_save(void);
 int wizard_detect(void);

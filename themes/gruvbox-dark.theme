@@ -1,0 +1,26 @@
+# gruvbox dark, use with "include = path/to/gruvbox-dark.theme" in [theme]
+[theme]
+bg = #282828
+fg = #ebdbb2
+panel = #1d2021
+border = #504945
+accent = #83a598
+select_bg = #504945
+select_fg = #fbf1c7
+unread = #fabd2f
+dim = #928374
+menu_bg = #3c3836
+menu_fg = #ebdbb2
+status_bg = #3c3836
+status_fg = #ebdbb2
+error = #fb4934
+flagged = #fe8019
+quote = #b8bb26
+cursor = #ebdbb2
+mode_normal = #a89984
+mode_insert = #83a598
+mode_visual = #fe8019
+mode_command = #b8bb26
+mode_find = #8ec07c
+mode_replace = #fb4934
+search = #fabd2f

@@ -86,7 +86,11 @@ The leader key is Space by default (`leader` option).
 | `<CR>`, click | open in the current window |
 | `<S-CR>`, right click | open in a new window / context menu |
 | `r` `R` `f` | reply, reply all, forward |
-| `d` `a` `m` `s` `u` | delete, archive, move, flag, toggle read |
+| `dd` | delete (in the list and in a message) |
+| `a` `m` `s` `n` | archive, move, flag, toggle read |
+| `u` | undo |
+| `\|` | pipe the message to a shell command |
+| `v` `V` in the list | select several messages |
 | `<C-w>v` `<C-w>s` `<C-w>hjkl` `<C-w>q` `<C-w>o` | window management |
 | `<leader>c` `<leader>s` | compose, synchronize |
 | `<leader>a`, `:ask`, `:ai_draft` | summarize, ask, or draft a reply with the LLM |
@@ -94,6 +98,47 @@ The leader key is Space by default (`leader` option).
 | `y` | copy the selection |
 | `<C-S-c>` `<C-S-x>` `<C-S-v>` | copy, cut, paste, in any mode and field |
 | `:` | command line (`:move Archive`, `:attach FILE`, `:send`, `:w`, `:q`, `:!cmd %f`) |
+
+### Managing messages
+
+The message list takes counts, a delete operator and a visual mode.
+
+| keys | effect |
+| --- | --- |
+| `5j` `12G` | move five rows, go to row twelve |
+| `dd` `3dd` | delete this message, or three from here |
+| `dj` `dk` `d2j` `dG` `dgg` `d5G` | delete from here to where the motion goes |
+| `3a` `3s` `3n` `3m` | archive, flag, toggle read or move three messages |
+| `v` or `V` | select; extend with any list motion, `o` swaps ends |
+| `d` `x` `a` `s` `n` `m` | act on the selection |
+| `u` `3u` `:undo` | undo the last action, or the last three |
+| `<Esc>` | drop the selection, a count or a waiting `d` |
+| `:2,8delete` `:%archive` `:.,$move Junk` | act on a range of rows |
+
+Typing `:` over a selection starts the command with `'<,'>`, and your own
+commands and key bindings act on the selection too. Flagging or toggling a
+mixed selection sets it on all of them first. Right-click inside a
+selection to use the menu on all of it.
+
+Delete moves messages to the trash folder. Inside the trash, or without a
+trash folder, it only marks them; they are shown dimmed and the next sync
+removes them for good.
+
+`u` undoes deleting, archiving, moving, flagging and toggling read, one
+action at a time however many messages it covered, up to 100 actions while
+epis runs. There is no redo. Before a sync, undo gives files their old
+names back, so the server never notices. After a sync, flag and read changes
+can still be undone and are uploaded by the next one, but messages that the
+sync has already deleted or moved cannot be restored with `u`: those moved
+to a folder such as the trash are still there. Undo waits while a sync
+started from epis is running.
+
+If mail arrives while you are selecting and the selection would then cover
+different messages, it is cleared. A sync or other background command that
+finishes also cancels a half typed command such as `d`.
+
+In `[keys]`, `delete_motion` is the command behind the `d` of `dd`. To go
+back to deleting with one key, bind `mail d = delete`.
 
 In a message, `v` and `V` start a selection. The usual motions extend it,
 `o` swaps its ends, and `<Esc>` drops it. A selection can span the headers
@@ -103,17 +148,100 @@ system clipboard and `p` pastes what you copied elsewhere. Deleted text
 stays in the editor, so `dd` does not overwrite the clipboard.
 
 The mode name in the status bar has a colour for each mode, set by the
-`mode_normal`, `mode_insert`, `mode_visual`, `mode_vline`, `mode_command`,
-`mode_find` and `mode_setup` theme keys. If unset, normal and setup follow
-`accent` and `mode_vline` follows `mode_visual`.
+`mode_normal`, `mode_insert`, `mode_replace`, `mode_visual`, `mode_vline`,
+`mode_vblock`, `mode_command`, `mode_find` and `mode_setup` theme keys. If
+unset, normal and setup follow `accent`, and `mode_vline` and `mode_vblock`
+follow `mode_visual`. `search` colours search matches.
 
-The composer uses vim keys by default (`vim_edit = no` turns them off). It
-supports motions, counts, operators (`d`, `c`, `y`) with motions, visual
-mode, `p`, `u`, `r`, `J`, `o`, and `ZZ` or `:send` to send.
+### Piping messages and applying patches
+
+Press `|` on a message, in the list or open, and type a shell command. It
+gets the raw message, headers included, with Unix line endings. This is what
+`git am` reads, so you can review a patch and apply it from epis:
+
+| keys | effect |
+| --- | --- |
+| `\|git -C ~/src/project am -3` | commit the patch in this message |
+| `V` `jj` `\|git -C ~/src/project am -3` | commit a series of three |
+| `\|git -C ~/src/project apply` | change the files without committing |
+| `:%pipe grep ^Subject:` `:2,4\|wc` | pipe a range of rows |
+| `\|` `<Up>` `<Down>` | recall earlier commands |
+
+`git am` keeps the author, date and commit message, and decodes
+quoted-printable and base64 mail. `git apply` reads only the diff, does not
+decode the mail and has no `-m` option.
+
+Several messages are sent as one mbox. If their subjects are numbered like
+`[PATCH 2/5]`, they go in that order; otherwise the oldest goes first. A
+series with a cover letter (`0/5`) needs `git am --empty=drop`.
+
+The command runs in the background with `/bin/sh -c`, in the directory epis
+was started from, so name the repository with `-C` or `cd`. Everything after
+`|` or `pipe` belongs to the shell, including `;` and `|`. It has no
+terminal, so it cannot ask questions or open a pager or an editor. A
+successful command that prints at most one line reports in the status bar;
+otherwise its output and exit status open in a new window (`<C-w>q` closes
+it). If `git am` stops on a conflict, finish or `git am --abort` it in a
+terminal.
+
+To keep a command you use often:
+
+```
+[commands]
+am = pipe git -C ~/src/project am -3 --empty=drop
+
+[keys]
+mail A = am
+```
+
+This binds `A` to apply the message or selection. While text is selected in a
+message, `|` still pipes the whole message.
+
+### The editor
+
+The composer uses vim keys by default (`vim_edit = no` turns them off). The
+engine is epis's own and was checked against Neovim, with classic Vim
+defaults (`Y` yanks a line, `startofline`, `nojoinspaces`).
+
+| area | supported |
+| --- | --- |
+| modes | normal, insert, replace, visual (`v` `V` `<C-v>`), command line, search |
+| motions | `hjkl` `w b e ge` `W B E gE` `0 ^ $ g_ \|` (composer only) `gg G H M L` `f F t T ; ,` `% { } ( )` `+ - _` `gj gk g0 g$`, counts and `N%` |
+| operators | `d c y > < gu gU g~ gq gw`, doubled for lines, with any motion or text object |
+| text objects | `iw aw iW aW is as ip ap`, quotes, `() [] {} <>` (`b`, `B`) |
+| editing | `x X s S r R D C Y J gJ p P gp gP o O i I a A gI ~ <C-a> <C-x>` |
+| visual | all operators, `o`, `r`, `J`, `p`, `gv`, block `I A c d y p r > <` |
+| repeat | `.`, unlimited `u` and `<C-r>` |
+| macros | `q{reg}`, `@{reg}`, `@@`, `@:`, counts; recursive macros stop at the first failing command |
+| registers | `"a`-`"z` (`"A` appends), `"0`-`"9`, `"-`, `"_`, `"+`, `"*`, `"/` |
+| marks | `m{a-z}`, `'` and `` ` `` jumps, `'<` `'>` and `''` |
+| search | `/ ? n N * # g* g#` with Vim-style patterns, smart case, highlighting |
+| insert mode | `<C-w> <C-u> <C-r>{reg} <C-o> <C-t> <C-d>`, arrows |
+| scrolling | `<C-d> <C-u> <C-f> <C-b> <C-e> <C-y> zz zt zb` |
+| commands | ranges with `:s` `:&` `:g` `:v` `:normal` `:d` `:y` `:pu` `:j` `:m` `:t` `:>` `:<` `:sort` `:set` `:noh` and line numbers |
+
+Other `:` commands are epis commands, so `:w` saves a draft, `:x` or `ZZ`
+sends, `:q!` discards the message and `:attach` adds a file. `gq` refills
+paragraphs to `textwidth` (72) and keeps each quoting level apart.
+
+Long lines wrap on screen. Set `number = yes` and `relativenumber = yes` for
+line numbers; with both, the current line shows its own number and the
+others their distance from it. `:set nu`, `:set rnu` and their `no` forms
+change them while epis runs.
+
+A few things differ from Vim. Marks follow the text when it is edited.
+Search patterns are translated to POSIX regular expressions, so `\{-}`,
+look-around and patterns spanning lines do not work. A macro stops if
+another window takes the focus, so its remaining keys cannot act on mail.
+Not implemented: folds, the jump and change lists (`<C-o>`, `<C-i>`, `g;`),
+completion, tag text objects, `=`, `:s` with the `c` flag, and Vim script.
+
+In a message, the same motions, text objects and searches work while text
+is selected.
 
 You can rebind every key in `[keys]` and define your own commands in
 `[commands]`. A command can chain others with `;`, run a shell command with
-`!`, or replay keys with `feedkeys`. Colours, corner radius and padding are
+`!`, pipe the message with `pipe`, or replay keys with `feedkeys`. Colours, corner radius and padding are
 set in `[theme]`, and `include` loads a theme file (see `themes/`).
 
 ## Design notes
@@ -121,6 +249,8 @@ set in `[theme]`, and `include` loads a theme file (see `themes/`).
 - **Redraws:** the UI is not drawn in immediate mode. epis redraws only on
   input, resize or when a background job finishes, and sleeps in `poll(2)`
   otherwise. It uses no CPU while idle.
+- **Undo:** the editor logs each change instead of copying the text, so
+  undo is unlimited and costs memory only for what changed.
 - **Text buffer:** the editor uses a gap buffer. In a benchmark of 400,000
   typing and deleting edits in bursts at random positions in a ~500 KB
   document, the gap buffer took 0.02 s and 0.8 MB. An array-backed piece
@@ -132,7 +262,10 @@ set in `[theme]`, and `include` loads a theme file (see `themes/`).
 - **Sync:** IMAP sync merges flags three ways against the last synced state
   stored in `.epis-state`. Local deletions, moves and new messages (such as
   sent copies and drafts) are uploaded on the next sync. File names carry
-  the UID as `,U=<uid>`, as with mbsync.
+  the UID as `,U=<uid>`, as with mbsync. A message whose UID is gone from
+  the server is deleted locally only if the last sync recorded that UID.
+  Otherwise, as when an undo brings back a file after a sync saw it deleted,
+  it is kept and uploaded again.
 - **Authentication:** PLAIN, LOGIN, CRAM-MD5, SCRAM-SHA-1, SCRAM-SHA-256,
   XOAUTH2 and OAUTHBEARER, plus the IMAP `LOGIN` command. OAuth2 uses the
   authorization code flow with PKCE and a loopback redirect.

@@ -76,8 +76,30 @@ move in the message list or scroll a message
 .B <CR> <S-CR>
 open the message in this window or in a new window
 .TP
-.B r R f d a m s u
-reply, reply all, forward, delete, archive, move, flag, toggle read
+.B r R f a m s n
+reply, reply all, forward, archive, move, flag, toggle read
+.TP
+.B u
+undo the last delete, archive, move or flag change; a count undoes several.
+Messages that a sync has already deleted or moved cannot be restored
+.TP
+.B |
+pipe the raw message, or the selected messages, to a shell command (see
+.BR PIPING )
+.TP
+.BR dd ", " 3dd ", " dj ", " dG
+delete this message, several, or up to where a motion goes. In a message,
+.B dd
+deletes it
+.TP
+.BR v " or " V " in the list"
+select messages, then
+.BR d ", " x ", " a ", " s ", " n " or " m
+act on all of them. Counts work with motions and actions, and commands take
+row ranges, as in
+.B :2,8delete
+or
+.B :%archive
 .TP
 .B <C-w>v <C-w>s <C-w>hjkl <C-w>q <C-w>o
 split side by side or stacked, move between, close and keep windows
@@ -97,6 +119,49 @@ copy, cut and paste; Cmd\-C, Cmd\-X and Cmd\-V also work on macOS
 command line, e.g. :move Archive, :attach ~/file.pdf, :send, :w, :q,
 :!shell command (%f is the message file), :feedkeys keys,
 :screenshot file.ppm
+.SH PIPING
+.B |
+or
+.BI :pipe " command"
+runs
+.I command
+with
+.B /bin/sh \-c
+in the directory epis was started from, with the message as its input,
+headers included and with Unix line endings. The rest of the line belongs to
+the shell. Several messages form an mbox, ordered by their
+.B [PATCH n/m]
+numbers or else oldest first, so that
+.B git \-C ~/src/project am \-3
+can commit a patch series; add
+.B \-\-empty=drop
+if it has a cover letter. The command has no terminal.
+.B <Up>
+and
+.B <Down>
+recall earlier commands. Output of more than one line, and any failure, opens
+in a new window.
+.SH EDITOR
+The message editor emulates vim: normal, insert, replace, visual (including
+block) and command line modes; motions, operators and text objects with
+counts; registers, marks, searches, macros,
+.B .
+and unlimited undo. The commands
+.BR :s ", " :g ", " :v ", " :normal ", " :d ", " :y ", " :m ", " :t ", " :sort " and " :set
+take line ranges. Other commands are those of epis. See README.md for the
+full list and the differences from vim.
+.TP
+.BR ":set number" ", " ":set relativenumber"
+show absolute or relative line numbers, as the
+.B number
+and
+.B relativenumber
+options do
+.TP
+.B gq
+refill paragraphs to
+.BR textwidth ,
+keeping quoting levels apart
 .P
 .B \-e
 runs ;-separated commands right after the window opens.

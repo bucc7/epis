@@ -10,6 +10,13 @@
 static char frame[FRAME];
 static size_t used;
 static Clay_Context *clay;
+/*
+ * the layout capacities, Clay's defaults until a long message needs more.
+ * They double up to MAXELEMENTS, about half a million lines.
+ */
+#define MAXELEMENTS (1 << 19)
+static int elements = 8192, outgrown;
+static void *clay_memory;
 static float lw, lh;
 
 const char **wizard_label_list(void);
@@ -73,6 +80,15 @@ static Clay_Dimensions measure(Clay_StringSlice t, Clay_TextElementConfig *c,
 
 static void clay_error(Clay_ErrorData e)
 {
+	/* running out of room is cured by laying out again with more */
+	if ((e.errorType == CLAY_ERROR_TYPE_ELEMENTS_CAPACITY_EXCEEDED ||
+	     e.errorType == CLAY_ERROR_TYPE_TEXT_MEASUREMENT_CAPACITY_EXCEEDED ||
+	     e.errorType == CLAY_ERROR_TYPE_ARENA_CAPACITY_EXCEEDED ||
+	     e.errorType == CLAY_ERROR_TYPE_INTERNAL_ERROR) &&
+	    elements < MAXELEMENTS) {
+		outgrown = 1;
+		return;
+	}
 	warnx("layout: %.*s", (int)e.errorText.length, e.errorText.chars);
 }
 
@@ -127,102 +143,227 @@ static float elem_h(Clay_ElementId id)
 	return d.found ? d.boundingBox.height : 0;
 }
 
-/* render one line of an editor with cursor and selection highlighting */
-static void ed_line(struct editor *e, size_t ls, size_t le, int focus,
-		    int font)
+/* most search matches highlighted on one screen row */
+#define MATCHES 24
+
+static int compare_pos(const void *a, const void *b)
 {
-	size_t cuts[6], i, j, a, b, sa = 0, sb = 0;
-	int n = 0, sel = focus && (e->mode == ED_VISUAL ||
-				   e->mode == ED_VLINE);
+	size_t x = *(const size_t *)a, y = *(const size_t *)b;
+
+	return x < y ? -1 : x > y;
+}
+
+/*
+ * render the part [rs, re) of the line [ls, le] with the cursor, the
+ * selection and search matches highlighted. The last row of a line also
+ * shows its end.
+ */
+static void ed_row(struct editor *e, size_t rs, size_t re, size_t ls,
+		   size_t le, int focus, int font, int search)
+{
+	size_t cuts[2 * MATCHES + 6], found[MATCHES][2], sa = 0, sb = 0, a, b;
+	int n = 0, nfound = 0, i, k, last = re == le;
+	int sel = focus && ed_line_selection(e, ls, le, &sa, &sb);
 	int bar = focus && e->mode == ED_INSERT;
-	char *buf;
+	int here = focus && e->cur >= rs && (e->cur < re ||
+					     (last && e->cur == re));
+	char *buf = xmalloc(re - rs + 1);
 
+	if (search)
+		nfound = ed_matches(e, ls, le, found, MATCHES);
+	cuts[n++] = rs;
+	cuts[n++] = re;
 	if (sel) {
-		sa = e->vstart < e->cur ? e->vstart : e->cur;
-		sb = e->vstart < e->cur ? e->cur : e->vstart;
-		if (e->mode == ED_VLINE) {
-			sa = ed_line_start(e, sa);
-			sb = ed_line_end(e, sb);
-		} else {
-			sb++;
-		}
-	}
-	cuts[n++] = ls;
-	cuts[n++] = le;
-	if (sel && sa > ls && sa < le)
 		cuts[n++] = sa;
-	if (sel && sb > ls && sb < le)
 		cuts[n++] = sb;
-	if (focus && e->cur >= ls && e->cur <= le) {
-		cuts[n++] = e->cur;
-		if (e->cur < le)
-			cuts[n++] = e->cur + 1;
 	}
-	for (i = 1; i < (size_t)n; i++)
-		for (j = i; j > 0 && cuts[j - 1] > cuts[j]; j--) {
-			size_t t = cuts[j];
-
-			cuts[j] = cuts[j - 1];
-			cuts[j - 1] = t;
-		}
-	buf = xmalloc(le - ls + 2);
+	for (i = 0; i < nfound; i++) {
+		cuts[n++] = found[i][0];
+		cuts[n++] = found[i][1];
+	}
+	if (here) {
+		cuts[n++] = e->cur;
+		cuts[n++] = e->cur < re ? ed_next(e, e->cur) : re;
+	}
+	for (i = 0; i < n; i++)
+		cuts[i] = cuts[i] < rs ? rs : cuts[i] > re ? re : cuts[i];
+	qsort(cuts, n, sizeof(*cuts), compare_pos);
 	CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
 				       CLAY_SIZING_FIT(0) } } }) {
-		if (ls == le && !(focus && e->cur == ls))
+		if (rs == re && !here && !(sel && sb > le))
 			CLAY_TEXT(CLAY_STRING(" "), txt(font, C_FG, 2));
-		for (i = 0; i + 1 < (size_t)n; i++) {
-			int cursor;
-			int insel;
+		for (i = 0; i < n; i++) {
+			int cursor, marked = 0, hit = 0;
+			Clay_Color bg = { 0 };
 
 			a = cuts[i];
-			b = cuts[i + 1];
-			if (focus && bar && a == e->cur && (i == 0 ||
-							    cuts[i - 1] != a))
+			b = i + 1 < n ? cuts[i + 1] : a;
+			if (here && bar && a == e->cur &&
+			    (!i || cuts[i - 1] != a))
 				CLAY({ .layout = { .sizing = {
 					CLAY_SIZING_FIXED(2),
-					CLAY_SIZING_GROW(0) } },
+					CLAY_SIZING_FIXED(font_lineh(font,
+						cfg.font_size)) } },
 				       .backgroundColor = col(C_CURSOR) }) {
 				}
-			if (a == b)
+			if (a >= b)
 				continue;
-			while (b < le && ((unsigned char)ed_at(e, b) & 0xc0) ==
-			       0x80)
-				b++;
-			cursor = focus && !bar && a == e->cur;
-			insel = sel && a >= sa && a < sb;
+			cursor = here && !bar && a == e->cur;
+			marked = sel && a >= sa && a < sb;
+			for (k = 0; k < nfound; k++)
+				hit |= a >= found[k][0] && a < found[k][1];
+			if (cursor)
+				bg = col(C_CURSOR);
+			else if (marked)
+				bg = col(C_SEL_BG);
+			else if (hit)
+				bg = col(C_SEARCH);
 			ed_copy(e, a, b, buf);
-			CLAY({ .backgroundColor = cursor ? col(C_CURSOR) :
-			       insel ? col(C_SEL_BG) : (Clay_Color){ 0 } }) {
-				CLAY_TEXT(astr(buf, b - a), txt(font, cursor ?
-								 C_BG : C_FG,
-								 2));
-			}
-			if (b > cuts[i + 1]) {
-				for (j = i + 1; j < (size_t)n && cuts[j] < b;
-				     j++)
-					cuts[j] = b;
+			CLAY({ .backgroundColor = bg }) {
+				CLAY_TEXT(astr(buf, b - a),
+					  txt(font, cursor || (hit && !marked) ?
+					      C_BG : C_FG, 2));
 			}
 		}
-		if (focus && bar && e->cur == le && (n < 2 ||
-						     cuts[n - 2] != le ||
-						     ls == le))
-			CLAY({ .layout = { .sizing = { CLAY_SIZING_FIXED(2),
-						       CLAY_SIZING_FIXED(
-						font_lineh(font,
-							   cfg.font_size)) } },
-			       .backgroundColor = col(C_CURSOR) }) {
-			}
-		if (focus && !bar && e->cur == le)
+		/* the cursor or the selected line break after the text */
+		if (here && !bar && e->cur == le) {
 			CLAY({ .backgroundColor = col(C_CURSOR) }) {
 				CLAY_TEXT(CLAY_STRING(" "), txt(font, C_BG, 2));
 			}
+		} else if (last && sel && sb > le) {
+			CLAY({ .backgroundColor = col(C_SEL_BG) }) {
+				CLAY_TEXT(CLAY_STRING(" "), txt(font, C_FG, 2));
+			}
+		}
 	}
 	free(buf);
 }
 
 static void single_field(struct editor *e, int focus)
 {
-	ed_line(e, 0, ed_len(e), focus, FONT_UI);
+	ed_row(e, 0, ed_len(e), 0, ed_len(e), focus, FONT_UI, 0);
+}
+
+/* the screen rows a line takes, and the one the cursor is on */
+static int line_rows(struct editor *e, size_t ls, int *cursor_row)
+{
+	size_t le = ed_line_end(e, ls), p = ls, next;
+	int n = 0;
+
+	do {
+		next = ed_wrap(e, p, le, e->cols);
+		if (cursor_row && e->cur >= p &&
+		    (e->cur < next || next == le))
+			*cursor_row = n;
+		n++;
+		p = next;
+	} while (p < le);
+	return n;
+}
+
+/*
+ * keep the cursor in sight; returns how many rows of the top line are
+ * scrolled away, which only happens for a line taller than the view
+ */
+static int scroll_editor(struct editor *e, int height)
+{
+	int cur = ed_line_of(e, e->cur), crow = 0, used, l;
+	size_t cls = ed_line_start(e, e->cur), p;
+
+	if (cur < e->top)
+		e->top = cur;
+	line_rows(e, cls, &crow);
+	/* far jumps need not measure every line in between */
+	if (cur - e->top > height)
+		e->top = cur - height;
+	used = crow + 1;
+	for (l = e->top, p = ed_line_pos(e, l); l < cur; l++) {
+		used += line_rows(e, p, NULL);
+		p = ed_line_end(e, p) + 1;
+	}
+	for (p = ed_line_pos(e, e->top); used > height && e->top < cur;
+	     e->top++) {
+		used -= line_rows(e, p, NULL);
+		p = ed_line_end(e, p) + 1;
+	}
+	return e->top == cur && crow >= height ? crow - height + 1 : 0;
+}
+
+/* the number shown beside a line: absolute, relative or both */
+static Clay_String line_number(int line, int cursor, int width)
+{
+	if (!cfg.relativenumber)
+		return fstr("%*d", width, line + 1);
+	if (line != cursor)
+		return fstr("%*d", width, abs(line - cursor));
+	/* like vim, the current line number stands out to the left */
+	return cfg.number ? fstr("%-*d", width, line + 1) :
+	    fstr("%*d", width, 0);
+}
+
+/* the multi line editor with wrapping and optional line numbers */
+static void editor_body(struct editor *e, Clay_ElementId body, int focus,
+			int height)
+{
+	float charw = font_width(FONT_MONO, cfg.font_size, "M", 1);
+	float rowheight = font_lineh(FONT_MONO, cfg.font_size);
+	float inner = elem_w(body) - 4 * cfg.padding, gutter = 0;
+	int numbers = cfg.number || cfg.relativenumber;
+	int cursor = ed_line_of(e, e->cur), line, digits, n, skip, rows = 0;
+	int shown = 0;
+	size_t p;
+
+	for (digits = 1, n = ed_lines(e); n >= 10; n /= 10)
+		digits++;
+	if (digits < 3)
+		digits = 3;
+	if (numbers)
+		gutter = (digits + 1) * charw;
+	e->cols = inner > 0 ? (int)((inner - gutter - 2) / charw) : 80;
+	skip = scroll_editor(e, height);
+	line = e->top;
+	for (p = ed_line_pos(e, line); rows <= height && p <= ed_len(e);
+	     line++) {
+		size_t le = ed_line_end(e, p), rs = p, re;
+		int first = 1;
+
+		do {
+			re = ed_wrap(e, rs, le, e->cols);
+			if (skip) {
+				skip--;
+			} else if (rows++ <= height) {
+				CLAY({ .layout = { .sizing = {
+					CLAY_SIZING_GROW(0),
+					CLAY_SIZING_FIXED(rowheight) } } }) {
+					if (numbers)
+						CLAY({ .layout = { .sizing = {
+							CLAY_SIZING_FIXED(
+								gutter),
+							CLAY_SIZING_FIT(0) } }
+						     }) {
+							if (first)
+								CLAY_TEXT(
+								line_number(line,
+									cursor,
+									digits),
+								txt(FONT_MONO,
+								    line ==
+								    cursor ?
+								    C_ACCENT :
+								    C_DIM, 2));
+						}
+					ed_row(e, rs, re, p, le, focus,
+					       FONT_MONO, 1);
+				}
+			}
+			first = 0;
+			rs = re;
+		} while (rs < le);
+		shown += rows <= height;
+		p = le + 1;
+	}
+	/* H, M, L and half pages work on the lines that fit */
+	e->vis = rows < height ? height : shown > 0 ? shown : 1;
 }
 
 static void list_view(struct win *w, int li, int focus)
@@ -230,7 +371,7 @@ static void list_view(struct win *w, int li, int focus)
 	Clay_ElementId rows = wid("rows", li, 0);
 	float rh = rowh(), h = elem_h(rows), rw = elem_w(rows);
 	float datew = font_width(FONT_UI, cfg.font_size, "00 Mmm 0000", 11);
-	int i, unread = 0;
+	int i, unread = 0, lo, hi;
 
 	w->vis = h > 0 ? (int)(h / rh) : 20;
 	if (w->vis < 1)
@@ -263,12 +404,16 @@ static void list_view(struct win *w, int li, int focus)
 						      "<leader>s to sync."),
 					  txt(FONT_UI, C_DIM, 2));
 			}
+		list_range(w, &lo, &hi);
 		for (i = w->top; i < w->nmsgs && i < w->top + w->vis; i++) {
 			struct msginfo *m = &w->msgs[i];
 			Clay_ElementId id = wid("row", li, i);
-			int sel = i == w->sel, un = !(m->flags & F_SEEN);
-			int fg = sel && focus ? C_SEL_FG : un ? C_UNREAD :
-			    C_FG;
+			int cursor = i == w->sel, un = !(m->flags & F_SEEN);
+			int sel = i >= lo && i <= hi;
+			/* messages that the next sync removes are dimmed */
+			int fg = sel && focus ? C_SEL_FG :
+			    m->flags & F_TRASHED ? C_DIM :
+			    un ? C_UNREAD : C_FG;
 			int font = un ? FONT_BOLD : FONT_UI;
 			char date[32], *from = addr_display(m->from);
 			time_t now = time(NULL);
@@ -284,7 +429,10 @@ static void list_view(struct win *w, int li, int focus)
 				.childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
 			       .backgroundColor = sel ? (focus ? col(C_SEL_BG)
 							 : col(C_BORDER)) :
-			       (Clay_Color){ 0 } }) {
+			       (Clay_Color){ 0 },
+			       /* the cursor end of a selection */
+			       .border = { col(C_CURSOR), { .left =
+					w->visual && cursor ? 4 : 0 } } }) {
 				CLAY({ .layout = { .sizing = {
 					CLAY_SIZING_FIXED(28),
 					CLAY_SIZING_FIXED(10) },
@@ -347,9 +495,12 @@ static void text_view(struct win *w, int li)
 	float bh = elem_h(body), ch = elem_h(content);
 	int i;
 
-	w->maxscroll = ch > bh ? ch - bh : 0;
-	if (w->scroll > w->maxscroll)
-		w->scroll = w->maxscroll;
+	/* a layout that was just rebuilt has no sizes to offer yet */
+	if (bh > 0 && ch > 0) {
+		w->maxscroll = ch > bh ? ch - bh : 0;
+		if (w->scroll > w->maxscroll)
+			w->scroll = w->maxscroll;
+	}
 	w->vislines = bh;
 	CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
 				       CLAY_SIZING_FIT(0) },
@@ -357,11 +508,23 @@ static void text_view(struct win *w, int li)
 			   .childGap = 6,
 			   .layoutDirection = CLAY_TOP_TO_BOTTOM },
 	       .backgroundColor = col(C_PANEL) }) {
-		if (w->title)
-			CLAY_TEXT(cstr(w->title), CLAY_TEXT_CONFIG({
-				.fontId = FONT_BOLD,
-				.fontSize = cfg.font_size + 3,
-				.textColor = col(C_ACCENT) }));
+		if (w->title) {
+			/*
+			 * a title that is a command line is cut short: its long
+			 * paths would otherwise widen the window
+			 */
+			int cut = w->title[0] == '|';
+
+			CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
+						CLAY_SIZING_FIT(0) } },
+			       .clip = { .horizontal = cut } }) {
+				CLAY_TEXT(cstr(w->title), CLAY_TEXT_CONFIG({
+					.fontId = FONT_BOLD,
+					.fontSize = cfg.font_size + 3,
+					.textColor = col(C_ACCENT),
+					.wrapMode = cut ? 2 : 0 }));
+			}
+		}
 		if (w->hlen && w->type == W_MSG)
 			CLAY_TEXT(((Clay_String){ false, (int32_t)w->hlen,
 						  w->doc }),
@@ -434,8 +597,7 @@ static void compose_view(struct win *w, int li, int focus)
 	struct editor *e = &w->f[3];
 	Clay_ElementId body = wid("cbody", li, 0);
 	float lh1 = font_lineh(FONT_MONO, cfg.font_size);
-	size_t p;
-	int i, line, cl;
+	int i;
 
 	CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
 				       CLAY_SIZING_FIT(0) },
@@ -456,14 +618,9 @@ static void compose_view(struct win *w, int li, int focus)
 			button(3, "Save draft", li);
 		}
 	}
-	w->vislines = (int)(elem_h(body) / lh1) - 1;
+	w->vislines = (int)((elem_h(body) - 4 * cfg.padding) / lh1);
 	if (w->vislines < 1)
 		w->vislines = 1;
-	cl = ed_line_of(e, e->cur);
-	if (cl < e->top)
-		e->top = cl;
-	if (cl >= e->top + w->vislines)
-		e->top = cl - w->vislines + 1;
 	hit_add(body, H_FIELD, 3, li);
 	CLAY({ .id = body, .layout = { .sizing = { CLAY_SIZING_GROW(0),
 						   CLAY_SIZING_GROW(0) },
@@ -471,15 +628,7 @@ static void compose_view(struct win *w, int li, int focus)
 							2),
 				       .layoutDirection = CLAY_TOP_TO_BOTTOM },
 	       .clip = { .vertical = true, .horizontal = true } }) {
-		for (p = 0, line = 0; line < e->top && p < ed_len(e); line++)
-			p = ed_line_end(e, p) + 1;
-		for (; line < e->top + w->vislines + 1 && p <= ed_len(e);
-		     line++) {
-			size_t le = ed_line_end(e, p);
-
-			ed_line(e, p, le, focus && w->field == 3, FONT_MONO);
-			p = le + 1;
-		}
+		editor_body(e, body, focus && w->field == 3, w->vislines);
 	}
 }
 
@@ -659,6 +808,8 @@ static void statusbar(void)
 	struct win *w = app.focus ? app.focus->w : NULL;
 	int color;
 	const char *mode = editor_ctx_mode(&color);
+	struct editor *e = ui_vim_editor();
+	const char *prompt = e ? ed_prompt(e) : NULL;
 
 	CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
 				       CLAY_SIZING_FIT(0) },
@@ -670,15 +821,59 @@ static void statusbar(void)
 		       .cornerRadius = CLAY_CORNER_RADIUS(4) }) {
 			CLAY_TEXT(cstr(mode), txt(FONT_BOLD, C_BG, 2));
 		}
+		if (vim_recording())
+			CLAY_TEXT(fstr("recording @%c", vim_recording()),
+				  txt(FONT_BOLD, C_ERROR, 2));
 		if (app.keys[0])
 			CLAY_TEXT(cstr(app.keys), txt(FONT_MONO, C_FLAGGED, 2));
-		CLAY({ .layout = { .sizing = { CLAY_SIZING_GROW(0),
-					       CLAY_SIZING_FIT(0) } } }) {
+		if (e && !prompt && *ed_showcmd(e))
+			CLAY_TEXT(fstr("%s", ed_showcmd(e)),
+				  txt(FONT_MONO, C_FLAGGED, 2));
+		if (w && w->type == W_LIST && !app.pick) {
+			int lo, hi;
+
+			if (*list_showcmd(w))
+				CLAY_TEXT(fstr("%s", list_showcmd(w)),
+					  txt(FONT_MONO, C_FLAGGED, 2));
+			list_range(w, &lo, &hi);
+			if (w->visual)
+				CLAY_TEXT(fstr("%d selected", hi - lo + 1),
+					  txt(FONT_BOLD, C_FLAGGED, 2));
+		}
+		Clay_ElementId line = CLAY_ID("statusline");
+		float over = 0;
+
+		if (app.cmdline || prompt) {
+			char *s = app.cmdline ? ed_text(&app.cmd) :
+			    xstrdup(prompt);
+			size_t upto = app.cmdline ? app.cmd.cur : strlen(s);
+			float room = elem_w(line) - 3 * font_width(FONT_MONO,
+					cfg.font_size, "M", 1);
+
+			over = font_width(FONT_MONO, cfg.font_size, s, upto) -
+			    room;
+			if (room <= 0 || over < 0)
+				over = 0;
+			free(s);
+		}
+		CLAY({ .id = line, .layout = { .sizing = {
+				CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) } },
+		       .clip = { .horizontal = true,
+				 .childOffset = { -over, 0 } } }) {
 			if (app.cmdline) {
 				CLAY_TEXT(CLAY_STRING(":"), txt(FONT_MONO,
 								C_STATUS_FG, 2));
-				ed_line(&app.cmd, 0, ed_len(&app.cmd), 1,
-					FONT_MONO);
+				ed_row(&app.cmd, 0, ed_len(&app.cmd), 0,
+				       ed_len(&app.cmd), 1, FONT_MONO, 0);
+			} else if (prompt) {
+				CLAY_TEXT(fstr("%s", prompt),
+					  txt(FONT_MONO, C_STATUS_FG, 2));
+				CLAY({ .layout = { .sizing = {
+					CLAY_SIZING_FIXED(2),
+					CLAY_SIZING_FIXED(font_lineh(FONT_MONO,
+						cfg.font_size)) } },
+				       .backgroundColor = col(C_CURSOR) }) {
+				}
 			} else {
 				CLAY_TEXT(fit(app.status, FONT_UI, lw - 400),
 					  txt(FONT_UI,
@@ -695,14 +890,24 @@ static void statusbar(void)
 	}
 }
 
+/* the space around and between the parts of a finder */
+#define PICK_PAD 10
+#define PICK_GAP 6
+
 static void picker_view(void)
 {
 	struct picker *pk = app.pick;
-	float rh = rowh(), ph = lh * 0.6f;
-	int vis = (int)((ph - rh * 2 - 24) / rh), i;
+	float rh = rowh();
+	float title = font_lineh(FONT_BOLD, cfg.font_size);
+	float mono = font_lineh(FONT_MONO, cfg.font_size);
+	float ui = font_lineh(FONT_UI, cfg.font_size);
+	float input = (mono > ui ? mono : ui) + 10;
+	/* each row adds its height and the gap before it */
+	float room = lh * 0.6f - 2 * PICK_PAD - title - PICK_GAP - input;
+	int vis = (int)(room / (rh + PICK_GAP)), i;
 
-	if (vis < 3)
-		vis = 3;
+	if (vis < 1)
+		vis = 1;
 	if (pk->sel < pk->top)
 		pk->top = pk->sel;
 	if (pk->sel >= pk->top + vis)
@@ -711,8 +916,9 @@ static void picker_view(void)
 		.attachTo = CLAY_ATTACH_TO_ROOT,
 		.offset = { lw * 0.2f, lh * 0.15f }, .zIndex = 100 },
 	       .layout = { .sizing = { CLAY_SIZING_FIXED(lw * 0.6f),
-				       CLAY_SIZING_FIT(0, ph) },
-			   .padding = CLAY_PADDING_ALL(10), .childGap = 6,
+				       CLAY_SIZING_FIT(0, 0) },
+			   .padding = CLAY_PADDING_ALL(PICK_PAD),
+			   .childGap = PICK_GAP,
 			   .layoutDirection = CLAY_TOP_TO_BOTTOM },
 	       .backgroundColor = col(C_MENU_BG),
 	       .cornerRadius = CLAY_CORNER_RADIUS(cfg.radius * 2),
@@ -850,24 +1056,37 @@ static void wizard_view(void)
 	}
 }
 
-/* build the whole interface for the current state */
-void ui_layout(Clay_RenderCommandArray *out)
+/* create the layout context, or replace it with one of a new capacity */
+static void clay_start(void)
+{
+	void *old = clay_memory;
+	uint32_t size;
+
+	if (clay) {
+		Clay_SetMaxElementCount(elements);
+		Clay_SetMaxMeasureTextCacheWordCount(elements * 8);
+	}
+	size = Clay_MinMemorySize();
+	clay_memory = xmalloc(size);
+	clay = Clay_Initialize(Clay_CreateArenaWithCapacityAndMemory(size,
+			       clay_memory), (Clay_Dimensions){ lw, lh },
+			       (Clay_ErrorHandler){ clay_error, 0 });
+	Clay_SetMeasureTextFunction(measure, NULL);
+	/* every line is needed to place a cursor scrolled away */
+	Clay_SetCullingEnabled(false);
+	free(old);
+}
+
+/* build the interface once with the current layout capacity */
+static void build(Clay_RenderCommandArray *out)
 {
 	int w, h, i;
 
 	plat_size(&w, &h);
 	lw = w / app.scale;
 	lh = h / app.scale;
-	if (!clay) {
-		uint32_t sz = Clay_MinMemorySize();
-
-		clay = Clay_Initialize(Clay_CreateArenaWithCapacityAndMemory(
-			sz, xmalloc(sz)), (Clay_Dimensions){ lw, lh },
-			(Clay_ErrorHandler){ clay_error, 0 });
-		Clay_SetMeasureTextFunction(measure, NULL);
-		/* every line is needed to place a cursor scrolled away */
-		Clay_SetCullingEnabled(false);
-	}
+	if (!clay)
+		clay_start();
 	used = 0;
 	app.nhits = 0;
 	app.nleaves = 0;
@@ -904,6 +1123,19 @@ void ui_layout(Clay_RenderCommandArray *out)
 
 		app.hits[i].box = d.found ? d.boundingBox :
 		    (Clay_BoundingBox){ 0 };
+	}
+}
+
+/* build the whole interface for the current state */
+void ui_layout(Clay_RenderCommandArray *out)
+{
+	for (;;) {
+		outgrown = 0;
+		build(out);
+		if (!outgrown)
+			return;
+		elements *= 2;
+		clay_start();
 	}
 }
 

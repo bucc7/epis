@@ -5,6 +5,13 @@ maildir = ~/Mail
 leader = <Space>
 # vim keys in the message editor
 vim_edit = yes
+# line numbers in the editor; with both, the others count from the cursor
+number = no
+relativenumber = no
+# the width gq refills paragraphs to
+textwidth = 72
+# highlight search matches
+hlsearch = yes
 # yanked text goes to the system clipboard, and p pastes from it
 clipboard = yes
 # the menu inside the window; macOS always uses the system menu bar
@@ -54,7 +61,9 @@ accent = #89b4fa
 # colour of the mode name in the status bar; normal follows accent if unset
 mode_insert = #a6e3a1
 mode_visual = #cba6f7
-# also: mode_normal, mode_vline, mode_command, mode_find, mode_setup
+# also: mode_normal, mode_replace, mode_vline, mode_vblock, mode_command,
+# mode_find, mode_setup
+search = #f9e2af
 radius = 6
 
 [keys]
@@ -68,6 +77,8 @@ global <C-s> = sync
 spam = move Junk
 inbox = folder INBOX
 notify = !notify-send "epis" "sync done"
+# pipe sends the message, or the selection, to a shell command
+am = pipe git -C ~/src/project am -3 --empty=drop
 # feedkeys replays keys, ; separates commands
 toptwo = top; feedkeys jj
 

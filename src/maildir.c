@@ -308,7 +308,10 @@ static int date_cmp(const void *a, const void *b)
 {
 	const struct msginfo *x = a, *y = b;
 
-	return x->date < y->date ? 1 : x->date > y->date ? -1 : 0;
+	if (x->date != y->date)
+		return x->date < y->date ? 1 : -1;
+	/* a fixed order, which renaming a file for its flags keeps */
+	return strcmp(strrchr(x->path, '/'), strrchr(y->path, '/'));
 }
 
 void sort_by_date(struct msginfo *m, int n)
@@ -363,7 +366,10 @@ char *maildir_trash(struct account *a, const char *path)
 	char *dir = folder_dir(a->name, a->trash);
 	char *cur = xasprintf("%s/cur", dir), *np;
 
-	if (strncmp(path, dir, strlen(dir)) && !access(cur, F_OK))
+	size_t n = strlen(dir);
+
+	/* "Trash-old" is not inside "Trash" */
+	if ((strncmp(path, dir, n) || path[n] != '/') && !access(cur, F_OK))
 		np = maildir_move(path, dir);
 	else
 		np = maildir_set_flags(path, maildir_flags_parse(path) |

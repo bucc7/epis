@@ -19,7 +19,9 @@
 struct app app;
 
 enum { PK_FOLDER, PK_MESSAGE, PK_COMMAND, PK_MOVE };
-enum { J_SYNC, J_LLM, J_DRAFT, J_AUTOCONF, J_SHELL };
+enum { J_SYNC, J_LLM, J_DRAFT, J_AUTOCONF, J_SHELL, J_PIPE };
+/* the most output of a command that is kept */
+#define MAXOUTPUT (4 << 20)
 
 struct job {
 	pid_t pid;
@@ -80,6 +82,9 @@ static const struct bind defaults[] = {
 	{ "list", "<CR>", "open" },
 	{ "list", "l", "open" },
 	{ "list", "<S-CR>", "open_split" },
+	{ "list", "d", "delete_motion" },
+	{ "list", "v", "visual" },
+	{ "list", "V", "visual_line" },
 	{ "list", "/", "find_message" },
 	{ "list", "q", "close" },
 	{ "message", "j", "scroll_down" },
@@ -99,11 +104,14 @@ static const struct bind defaults[] = {
 	{ "mail", "r", "reply" },
 	{ "mail", "R", "reply_all" },
 	{ "mail", "f", "forward" },
-	{ "mail", "d", "delete" },
+	/* "dd" here too, so that typing it never deletes twice */
+	{ "message", "dd", "delete" },
 	{ "mail", "a", "archive" },
 	{ "mail", "m", "move" },
 	{ "mail", "s", "flag" },
-	{ "mail", "u", "toggle_read" },
+	{ "mail", "n", "toggle_read" },
+	{ "mail", "|", "pipe" },
+	{ "mail", "u", "undo" },
 	{ "compose", "ZZ", "send" },
 	{ "compose", "<C-j>", "next_field" },
 	{ "compose", "<C-k>", "prev_field" },
@@ -137,7 +145,8 @@ static const struct menu_item m_msg[] = {
 	{ "Reply", "reply" }, { "Reply all", "reply_all" },
 	{ "Forward", "forward" }, { "Toggle read", "toggle_read" },
 	{ "Toggle flag", "flag" }, { "Move to...", "move" },
-	{ "Archive", "archive" }, { "Delete", "delete" },
+	{ "Archive", "archive" }, { "Delete", "delete" }, { "Undo", "undo" },
+	{ "Pipe to command...", "pipe" },
 	{ "Summarize (AI)", "summarize" }, { NULL, NULL }
 };
 
@@ -166,8 +175,8 @@ const struct menu_item ctx_items[] = {
 	{ "Reply", "reply" }, { "Reply all", "reply_all" },
 	{ "Forward", "forward" }, { "Toggle read", "toggle_read" },
 	{ "Toggle flag", "flag" }, { "Move to...", "move" },
-	{ "Delete", "delete" }, { "Summarize (AI)", "summarize" },
-	{ NULL, NULL }
+	{ "Delete", "delete" }, { "Pipe to command...", "pipe" },
+	{ "Summarize (AI)", "summarize" }, { NULL, NULL }
 };
 
 void ui_status(int err, const char *fmt, ...)
@@ -442,11 +451,10 @@ static void set_text(struct win *w, const char *hdr, const char *body)
 
 static void list_load(struct win *w, const char *acc, const char *folder)
 {
-	char *keep = w->nmsgs && w->sel < w->nmsgs ?
-	    xstrdup(strrchr(w->msgs[w->sel].path, '/')) : NULL;
+	struct list_mark mark;
 	char *dir;
-	int i;
 
+	list_save(w, &mark);
 	if (acc != w->acc) {
 		free(w->acc);
 		w->acc = xstrdup(acc);
@@ -461,16 +469,7 @@ static void list_load(struct win *w, const char *acc, const char *folder)
 	sort_by_date(w->msgs, w->nmsgs);
 	free(dir);
 	w->has_list = 1;
-	if (keep) {
-		size_t kl = strcspn(keep, ":");
-
-		for (i = 0; i < w->nmsgs; i++)
-			if (!strncmp(strrchr(w->msgs[i].path, '/'), keep, kl))
-				w->sel = i;
-		free(keep);
-	}
-	if (w->sel >= w->nmsgs)
-		w->sel = w->nmsgs ? w->nmsgs - 1 : 0;
+	list_restore(w, &mark);
 	app.dirty = 1;
 }
 
@@ -573,6 +572,7 @@ static void msg_show(struct win *w, const char *path)
 		w->msgs[w->sel].flags |= F_SEEN;
 	}
 	w->type = W_MSG;
+	w->visual = 0;
 	app.dirty = 1;
 }
 
@@ -827,29 +827,42 @@ static void send_compose(int save_draft)
 	draft_free(&d);
 }
 
-static void job_start(int kind, char *const argv[], struct win *w,
-		      const char *title)
+/*
+ * run a program in the background, collecting its output. in is a file
+ * descriptor to give it as input, or -1 for none.
+ */
+static int job_spawn(int kind, const char *program, char *const argv[],
+		     int in, struct win *w, const char *title)
 {
 	int p[2];
 	struct job *j;
 	pid_t pid;
 
 	if (njobs == 8 || pipe(p))
-		return;
+		return -1;
 	pid = fork();
 	if (pid < 0) {
 		close(p[0]);
 		close(p[1]);
-		return;
+		return -1;
 	}
 	if (!pid) {
-		int null = open("/dev/null", O_RDONLY);
-
-		dup2(null, 0);
+		if (in < 0)
+			in = open("/dev/null", O_RDONLY);
+		dup2(in, 0);
 		dup2(p[1], 1);
 		dup2(p[1], 2);
 		close(p[0]);
-		execv(self, argv);
+		if (kind == J_PIPE) {
+			/*
+			 * without a terminal a command cannot stop to ask
+			 * for something that would never be seen
+			 */
+			setsid();
+			setenv("PAGER", "cat", 1);
+			setenv("GIT_PAGER", "cat", 1);
+		}
+		execv(program, argv);
 		_exit(127);
 	}
 	close(p[1]);
@@ -861,6 +874,14 @@ static void job_start(int kind, char *const argv[], struct win *w,
 	j->kind = kind;
 	j->w = w;
 	j->title = title ? xstrdup(title) : NULL;
+	return 0;
+}
+
+/* run epis itself as a background job */
+static void job_start(int kind, char *const argv[], struct win *w,
+		      const char *title)
+{
+	job_spawn(kind, self, argv, -1, w, title);
 }
 
 static int win_alive(struct node *n, struct win *w)
@@ -869,6 +890,48 @@ static int win_alive(struct node *n, struct win *w)
 }
 
 static void wizard_fill(const char *out);
+static void split(int dir, struct win *w);
+static void set_text(struct win *w, const char *hdr, const char *body);
+
+/*
+ * show what a piped command said. A short success fits the status line;
+ * anything else gets a window of its own.
+ */
+static void pipe_done(const char *cmd, const char *raw, int status)
+{
+	char *out = pipe_output(raw), *body;
+	struct node *at;
+	struct win *w, *was = focused();
+
+	if (!status && !strchr(out, '\n')) {
+		if (*out)
+			ui_status(0, "%s", out);
+		else
+			ui_status(0, "piped to %s", cmd);
+	} else if (app.nleaves >= 8) {
+		const char *last = strrchr(out, '\n');
+
+		ui_status(status != 0, "exit status %d: %s", status,
+			  last ? last + 1 : out);
+	} else {
+		w = win_new(W_TEXT);
+		w->title = xasprintf("| %s", cmd);
+		body = xasprintf("%s%sexit status %d", out, *out ? "\n\n" :
+				 "", status);
+		set_text(w, NULL, body);
+		free(body);
+		at = app.focus;
+		split('v', w);
+		/* a message being written keeps the keyboard */
+		if (was && was->type == W_COMPOSE && at->a)
+			app.focus = at->a;
+		if (status)
+			ui_status(1, "command failed with status %d", status);
+		else
+			ui_status(0, "command finished");
+	}
+	free(out);
+}
 
 static void job_done(struct job *j, int status)
 {
@@ -902,6 +965,11 @@ static void job_done(struct job *j, int status)
 			ui_status(1, "AI draft failed");
 		}
 		break;
+	case J_PIPE:
+		pipe_done(j->title, out, status);
+		folders_load();
+		reload_lists(app.root);
+		break;
 	case J_AUTOCONF:
 		wizard_fill(out);
 		ui_status(0, "server settings detected, check them and save");
@@ -934,7 +1002,8 @@ static void jobs_poll(void)
 		int st;
 
 		while ((n = read(j->fd, tmp, sizeof(tmp))) > 0)
-			buf_add(&j->out, tmp, n);
+			if (j->out.len < MAXOUTPUT)
+				buf_add(&j->out, tmp, n);
 		if (n == 0 || (n < 0 && errno != EAGAIN)) {
 			close(j->fd);
 			waitpid(j->pid, &st, 0);
@@ -1075,7 +1144,8 @@ static const char *cmd_names[] = {
 	"toggle_read", "send", "draft", "attach", "next_field", "prev_field",
 	"sidebar", "menubar", "menu", "summarize", "ask", "ai_draft", "reload",
 	"help", "cmdline", "screenshot", "feedkeys", "copy", "cut", "paste",
-	"select_all", "visual", "visual_line", NULL
+	"select_all", "visual", "visual_line", "set", "nohlsearch",
+	"delete_motion", "undo", "pipe", NULL
 };
 
 static void find_folder(int kind)
@@ -1154,7 +1224,8 @@ static void open_folder(const char *af)
 		split('v', w);
 	}
 	w->type = W_LIST;
-	w->sel = w->top = 0;
+	w->sel = w->top = w->visual = 0;
+	list_reset();
 	msginfo_free(w->msgs, w->nmsgs);
 	w->msgs = NULL;
 	w->nmsgs = 0;
@@ -1162,21 +1233,120 @@ static void open_folder(const char *af)
 	free(acc);
 }
 
+/* messages waiting for the folder picker to say where they go */
+static char **moving;
+static int nmoving;
+
+static void free_paths(char **v, int n)
+{
+	int i;
+
+	for (i = 0; i < n; i++)
+		free(v[i]);
+	free(v);
+}
+
+/*
+ * the messages a command acts on: the selected rows of a list, or else
+ * the message at the cursor. Their paths are copied, so the same messages
+ * are acted on even if the list changes meanwhile.
+ */
+static int targets(struct win *w, char ***out)
+{
+	int lo, hi, i;
+	char **v;
+
+	*out = NULL;
+	if (w && w->type == W_LIST && w->visual && w->nmsgs) {
+		list_range(w, &lo, &hi);
+		v = xcalloc(hi - lo + 1, sizeof(*v));
+		for (i = lo; i <= hi; i++)
+			v[i - lo] = xstrdup(w->msgs[i].path);
+		*out = v;
+		return hi - lo + 1;
+	}
+	if (!cur_path(w))
+		return 0;
+	v = xcalloc(1, sizeof(*v));
+	v[0] = xstrdup(cur_path(w));
+	*out = v;
+	return 1;
+}
+
+/*
+ * leave visual mode after an action, with the cursor on the first of the
+ * messages. Messages that are only marked stay listed, so skip past them.
+ */
+static void end_selection(struct win *w, int marked)
+{
+	int lo, hi;
+
+	if (!w || w->type != W_LIST)
+		return;
+	list_range(w, &lo, &hi);
+	w->sel = marked && hi + 1 < w->nmsgs ? hi + 1 : lo;
+	w->visual = 0;
+}
+
+/* whether the message at path is already in the maildir dir */
+static int in_folder(const char *path, const char *dir)
+{
+	size_t n = strlen(dir);
+
+	return !strncmp(path, dir, n) && path[n] == '/' &&
+	    strlen(path + n) > 5 && !strchr(path + n + 5, '/');
+}
+
+static void report(const char *did, int done, int failed)
+{
+	if (failed)
+		ui_status(1, "%d of %d messages could not be %s", failed,
+			  done + failed, did);
+	else if (done == 1)
+		ui_status(0, "message %s", did);
+	else if (done)
+		ui_status(0, "%d messages %s", done, did);
+}
+
 static void move_to(const char *af)
 {
 	struct win *w = focused();
-	const char *p = cur_path(w);
 	char *acc = xstrndup(af, strcspn(af, "/"));
-	char *dir = folder_dir(acc, strchr(af, '/') + 1), *np;
+	char *dir = folder_dir(acc, strchr(af, '/') + 1), *np, *did;
+	int i, done = 0, failed = 0;
 
-	np = p ? maildir_move(p, dir) : NULL;
-	ui_status(!np, np ? "moved to %s" : "move failed", af);
-	free(np);
+	for (i = 0; i < nmoving; i++) {
+		if (in_folder(moving[i], dir))
+			continue;
+		np = maildir_move(moving[i], dir);
+		np ? done++ : failed++;
+		if (np)
+			undo_add(moving[i], np, 0);
+		free(np);
+	}
+	undo_commit();
+	did = xasprintf("moved to %s", af);
+	report(did, done, failed);
+	free(did);
+	free_paths(moving, nmoving);
+	moving = NULL;
+	nmoving = 0;
 	free(acc);
 	free(dir);
+	end_selection(w, 0);
 	if (w && w->type == W_MSG && w->has_list)
 		w->type = W_LIST;
 	reload_lists(app.root);
+}
+
+/* take note of the messages to move before a destination is chosen */
+static int move_begin(struct win *w)
+{
+	free_paths(moving, nmoving);
+	nmoving = targets(w, &moving);
+	if (!nmoving)
+		ui_status(1, "no message selected");
+	return nmoving;
 }
 
 static void picker_accept(void)
@@ -1202,54 +1372,227 @@ static void picker_accept(void)
 	free(data);
 }
 
-static void msg_flag(int flag, int toggle)
+/*
+ * toggle a flag on the messages: it is set on all of them if any lacks
+ * it, and cleared if they all have it
+ */
+static void msg_flag(int flag)
 {
 	struct win *w = focused();
-	const char *p = cur_path(w);
-	char *np;
-	int f;
+	char **v, *np;
+	int n = targets(w, &v), i, set = 0, failed = 0;
 
-	if (!p)
+	if (!n)
 		return;
-	f = maildir_flags_parse(p);
-	f = toggle && (f & flag) ? f & ~flag : f | flag;
-	np = maildir_set_flags(p, f);
-	if (np && w->type == W_MSG) {
-		free(w->path);
-		w->path = xstrdup(np);
+	for (i = 0; i < n; i++)
+		set |= !(maildir_flags_parse(v[i]) & flag);
+	for (i = 0; i < n; i++) {
+		int f = maildir_flags_parse(v[i]);
+
+		np = maildir_set_flags(v[i], set ? f | flag : f & ~flag);
+		failed += !np;
+		if (np)
+			undo_add(v[i], np, flag);
+		if (np && w->type == W_MSG) {
+			free(w->path);
+			w->path = xstrdup(np);
+		}
+		free(np);
 	}
-	free(np);
+	undo_commit();
+	if (failed)
+		report("changed", n - failed, failed);
+	/* flagging keeps the cursor where it ended */
+	w->visual = 0;
+	free_paths(v, n);
 	reload_lists(app.root);
 }
 
 static void msg_delete(int archive)
 {
 	struct win *w = focused();
-	const char *p = cur_path(w);
 	struct account *a = acc_of(w);
-	char *np = NULL;
+	char **v, *np, *dir, *cur, *trash;
+	int n, i, done = 0, failed = 0, marked = 0, skipped = 0;
 
-	if (!p || !a)
+	if (!a || !(n = targets(w, &v)))
 		return;
-	if (archive) {
-		char *dir = folder_dir(a->name, a->archive);
-		char *cur = xasprintf("%s/cur", dir);
-
-		if (access(cur, F_OK))
-			ui_status(1, "no archive folder '%s'", a->archive);
-		else
-			np = maildir_move(p, dir);
-		free(dir);
-		free(cur);
-	} else {
-		np = maildir_trash(a, p);
+	dir = folder_dir(a->name, archive ? a->archive : a->trash);
+	cur = xasprintf("%s/cur", dir);
+	trash = archive ? NULL : dir;
+	if (archive && access(cur, F_OK)) {
+		ui_status(1, "no archive folder '%s'", a->archive);
+		goto out;
 	}
-	free(np);
+	for (i = 0; i < n; i++) {
+		if (archive && in_folder(v[i], dir)) {
+			skipped++;
+			continue;
+		}
+		np = archive ? maildir_move(v[i], dir) :
+		    maildir_trash(a, v[i]);
+		if (!np) {
+			failed++;
+			continue;
+		}
+		done++;
+		/* a message that was only marked keeps its name */
+		undo_add(v[i], np, list_same(v[i], np) ? F_TRASHED : 0);
+		/* still outside the trash: only flagged for removal */
+		if (trash && (!in_folder(np, trash) || in_folder(v[i], trash)))
+			marked++;
+		free(np);
+	}
+	undo_commit();
+	if (skipped == n)
+		ui_status(0, "already archived");
+	else if (archive)
+		report("archived", done, failed);
+	else if (marked && !failed)
+		ui_status(0, "%d marked for permanent deletion at the next "
+			  "sync", marked);
+	else
+		report("moved to the trash", done, failed);
+	end_selection(w, marked);
 	if (w->type == W_MSG && w->has_list)
 		w->type = W_LIST;
 	else if (w->type == W_MSG)
 		close_focus(0);
 	reload_lists(app.root);
+out:
+	free(dir);
+	free(cur);
+	free_paths(v, n);
+}
+
+/* keep message views pointing at a file that has been renamed */
+static void follow_rename(struct node *n, const char *from, const char *to)
+{
+	if (!n)
+		return;
+	if (n->w && n->w->path && !strcmp(n->w->path, from)) {
+		free(n->w->path);
+		n->w->path = xstrdup(to);
+	}
+	follow_rename(n->a, from, to);
+	follow_rename(n->b, from, to);
+}
+
+static void renamed(const char *from, const char *to)
+{
+	follow_rename(app.root, from, to);
+}
+
+static void clear_selections(struct node *n)
+{
+	if (!n)
+		return;
+	if (n->w)
+		n->w->visual = 0;
+	clear_selections(n->a);
+	clear_selections(n->b);
+}
+
+/* undo the last times actions on messages */
+static void msg_undo(int times)
+{
+	char *first = NULL, *one;
+	int done = 0, failed = 0, undone = 0, d, f, i;
+	struct win *w;
+
+	/* a running sync would be changing the same files */
+	if (app.syncing) {
+		ui_status(1, "wait for the sync to finish before undoing");
+		return;
+	}
+	while (times-- > 0 && undo_last(renamed, &d, &f, &one)) {
+		undone++;
+		done += d;
+		failed += f;
+		if (one) {
+			free(first);
+			first = one;
+		}
+	}
+	if (!undone) {
+		ui_status(0, "nothing to undo");
+		return;
+	}
+	clear_selections(app.root);
+	reload_lists(app.root);
+	/* as in vim, the cursor goes to what came back */
+	w = focused();
+	if (w && w->has_list && first)
+		for (i = 0; i < w->nmsgs; i++)
+			if (list_same(w->msgs[i].path, first))
+				w->sel = i;
+	if (failed)
+		ui_status(1, "%d of %d messages could not be restored; they "
+			  "changed since, probably by a sync", failed,
+			  done + failed);
+	else
+		ui_status(0, "undone: %d message%s restored", done,
+			  done == 1 ? "" : "s");
+	free(first);
+}
+
+/*
+ * send the messages at the cursor or in the selection to a shell command.
+ * Without a command, ask for one.
+ */
+static void msg_pipe(const char *cmd)
+{
+	struct win *w = focused();
+	char *argv[] = { "/bin/sh", "-c", NULL, NULL };
+	struct msginfo *m;
+	char **v;
+	FILE *in;
+	int n, i, lo = 0, hi, listed;
+
+	if (!w || (w->type != W_LIST && w->type != W_MSG)) {
+		ui_status(1, "no message to pipe");
+		return;
+	}
+	if (!cmd || !*cmd) {
+		app.cmdline = 1;
+		app.recall = -1;
+		ed_set(&app.cmd, w->type == W_LIST && w->visual ?
+		       "'<,'>pipe " : "pipe ");
+		return;
+	}
+	if (!(n = targets(w, &v))) {
+		ui_status(1, "no message selected");
+		return;
+	}
+	/* a list knows the subjects and dates that decide the order */
+	listed = w->type == W_LIST;
+	if (listed)
+		list_range(w, &lo, &hi);
+	m = xcalloc(n, sizeof(*m));
+	for (i = 0; i < n; i++) {
+		if (listed)
+			m[i] = w->msgs[w->visual ? lo + i : w->sel];
+		m[i].path = v[i];
+	}
+	pipe_remember(cmd);
+	argv[2] = (char *)cmd;
+	in = pipe_input(m, n);
+	if (!in) {
+		ui_status(1, "cannot read the message");
+	} else if (job_spawn(J_PIPE, "/bin/sh", argv, fileno(in), NULL, cmd)) {
+		ui_status(1, "too many commands are running");
+	} else {
+		if (n > 1)
+			ui_status(0, "piping %d messages to %s", n, cmd);
+		else
+			ui_status(0, "piping to %s", cmd);
+		if (w->visual)
+			end_selection(w, 0);
+	}
+	if (in)
+		fclose(in);
+	free(m);
+	free_paths(v, n);
 }
 
 static void move_sel(struct win *w, int d)
@@ -1288,7 +1631,6 @@ static void shell(const char *cmdline)
 	const char *p = cur_path(w);
 	struct buf b = { 0 };
 	char *argv[] = { "/bin/sh", "-c", NULL, NULL };
-	char saved[4096];
 
 	for (; *cmdline; cmdline++) {
 		if (cmdline[0] == '%' && cmdline[1] == 'f') {
@@ -1300,10 +1642,7 @@ static void shell(const char *cmdline)
 	}
 	buf_add(&b, "", 0);
 	argv[2] = b.p;
-	memcpy(saved, self, sizeof(saved));
-	strcpy(self, "/bin/sh");
-	job_start(J_SHELL, argv, NULL, NULL);
-	memcpy(self, saved, sizeof(saved));
+	job_spawn(J_SHELL, "/bin/sh", argv, -1, NULL, NULL);
 	buf_free(&b);
 }
 
@@ -1334,6 +1673,8 @@ static void scroll(struct win *w, float dy)
 }
 
 static void feedkeys(const char *keys);
+
+static void show_vim_message(void);
 
 static int is_clip_command(const char *c)
 {
@@ -1386,7 +1727,6 @@ static void clip_command(const char *cmd)
 	struct win *w = focused();
 	int text = !e && w && (w->type == W_MSG || w->type == W_TEXT);
 	char *s = NULL;
-	size_t a, b;
 
 	app.dirty = 1;
 	if (!strcmp(cmd, "paste")) {
@@ -1404,13 +1744,16 @@ static void clip_command(const char *cmd)
 	}
 	if (text) {
 		s = sel_text(w);
-	} else if (e && ed_selection(e, &a, &b)) {
-		s = xmalloc(b - a + 1);
-		ed_copy(e, a, b, s);
+	} else if (e && (s = ed_selected_text(e))) {
+		int typing = e->typeover;
+
 		if (!strcmp(cmd, "cut"))
-			ed_remove(e, a, b);
-		e->mode = e->replace ? ED_INSERT : ED_NORMAL;
-		e->replace = 0;
+			ed_cut_selection(e);
+		else
+			e->mode = ED_NORMAL;
+		if (typing)
+			e->mode = ED_INSERT;
+		e->typeover = 0;
 	}
 	if (!s) {
 		ui_status(1, "nothing selected");
@@ -1438,13 +1781,41 @@ void ui_command(const char *line)
 		shell(line + 1);
 		return;
 	}
-	if (strchr(line, ';')) {
+	/* the shell gets everything after "|", semicolons included */
+	if (strchr(line, ';') && !pipe_argument(line)) {
 		char *dup = xstrdup(line), *s, *save = NULL;
 
 		for (s = strtok_r(dup, ";", &save); s;
 		     s = strtok_r(NULL, ";", &save))
 			ui_command(s);
 		free(dup);
+		return;
+	}
+	/* "2,5delete", "%archive" and "'<,'>move Junk" in a list */
+	if (w && w->type == W_LIST &&
+	    (strchr("%.$'+-", *line) || isdigit((unsigned char)*line))) {
+		const char *rest = line;
+		int sel = w->sel, visual = w->visual, anchor = w->anchor;
+		int r = list_command_range(w, &rest);
+
+		if (r)
+			return;
+		line = rest;
+		snprintf(name, sizeof(name), "%.*s",
+			 (int)strcspn(line, " "), line);
+		for (i = 0; i < cfg.nalias; i++)
+			if (!strcmp(name, cfg.alias[i].name))
+				break;
+		if (i == cfg.nalias && *line != '|' && !list_is_action(name)) {
+			w->sel = sel;
+			w->visual = visual;
+			w->anchor = anchor;
+			ui_status(1, "%s does not take a range", name);
+			return;
+		}
+	}
+	if (*line == '|') {
+		msg_pipe(line + 1 + strspn(line + 1, " "));
 		return;
 	}
 	snprintf(name, sizeof(name), "%.*s", (int)strcspn(line, " "), line);
@@ -1463,10 +1834,24 @@ void ui_command(const char *line)
 	if (is_clip_command(name)) {
 		clip_command(name);
 	} else if (!strncmp(name, "visual", 6)) {
-		if (w && (w->type == W_MSG || w->type == W_TEXT))
+		if (w && w->type == W_LIST) {
+			if (w->visual)
+				w->visual = 0;
+			else
+				list_select(w, w->sel, w->sel);
+		} else if (w && (w->type == W_MSG || w->type == W_TEXT))
 			sel_begin(w, name[6] ? ED_VLINE : ED_VISUAL);
+	} else if (!strcmp(name, "q!") && w && w->type == W_COMPOSE) {
+		close_focus(1);
+	} else if (!strcmp(name, "set") || !strncmp(name, "noh", 3)) {
+		struct editor tmp;
+
+		ed_init(&tmp, "", 0);
+		ed_command(&tmp, line);
+		ed_free(&tmp);
+		show_vim_message();
 	} else if (!strcmp(name, "quit") || !strcmp(name, "qa") ||
-	    !strcmp(name, "q!")) {
+		   !strcmp(name, "q!")) {
 		app.running = 0;
 	} else if (!strcmp(name, "q") || !strcmp(name, "close")) {
 		close_focus(!strcmp(name, "q"));
@@ -1522,7 +1907,8 @@ void ui_command(const char *line)
 			close_focus(0);
 		}
 	} else if (!strcmp(name, "down") || !strcmp(name, "up")) {
-		move_sel(w, name[0] == 'd' ? 1 : -1);
+		move_sel(w, (name[0] == 'd' ? 1 : -1) *
+			 (app.count ? app.count : 1));
 	} else if (!strcmp(name, "next") || !strcmp(name, "prev")) {
 		if (w && w->has_list) {
 			move_sel(w, name[0] == 'n' ? 1 : -1);
@@ -1530,13 +1916,16 @@ void ui_command(const char *line)
 				msg_show(w, w->msgs[w->sel].path);
 		}
 	} else if (!strcmp(name, "top") || !strcmp(name, "bottom")) {
-		if (w && w->type == W_LIST)
+		if (w && w->type == W_LIST && app.count)
+			move_sel(w, app.count - 1 - w->sel);
+		else if (w && w->type == W_LIST)
 			move_sel(w, name[0] == 't' ? -w->nmsgs : w->nmsgs);
 		else if (w)
 			scroll(w, name[0] == 't' ? -1e9f : 1e9f);
 	} else if (!strcmp(name, "pagedown") || !strcmp(name, "pageup")) {
 		if (w && w->type == W_LIST)
-			move_sel(w, name[4] == 'd' ? page : -page);
+			move_sel(w, (name[4] == 'd' ? page : -page) *
+				 (app.count ? app.count : 1));
 		else if (w)
 			scroll(w, (name[4] == 'd' ? 1 : -1) * w->vislines *
 			       0.8f);
@@ -1559,7 +1948,9 @@ void ui_command(const char *line)
 			free(af);
 		}
 	} else if (!strcmp(name, "move")) {
-		if (!arg) {
+		if (!move_begin(w)) {
+			return;
+		} else if (!arg) {
 			find_folder(PK_MOVE);
 		} else {
 			char *af = strchr(arg, '/') ? xstrdup(arg) :
@@ -1579,14 +1970,14 @@ void ui_command(const char *line)
 		reply(2);
 	} else if (!strcmp(name, "forward")) {
 		reply(3);
-	} else if (!strcmp(name, "delete")) {
+	} else if (!strcmp(name, "delete") || !strcmp(name, "d")) {
 		msg_delete(0);
 	} else if (!strcmp(name, "archive")) {
 		msg_delete(1);
 	} else if (!strcmp(name, "flag")) {
-		msg_flag(F_FLAGGED, 1);
+		msg_flag(F_FLAGGED);
 	} else if (!strcmp(name, "toggle_read")) {
-		msg_flag(F_SEEN, 1);
+		msg_flag(F_SEEN);
 	} else if (!strcmp(name, "send") || !strcmp(name, "wq") ||
 		   !strcmp(name, "x")) {
 		send_compose(0);
@@ -1598,6 +1989,7 @@ void ui_command(const char *line)
 		if (w && w->type == W_COMPOSE) {
 			w->field = (w->field + (name[0] == 'n' ? 1 : 3)) % 4;
 			w->f[w->field].mode = ED_INSERT;
+			w->f[w->field].pend.n = 0;
 		}
 	} else if (!strcmp(name, "sidebar")) {
 		app.sidebar = !app.sidebar;
@@ -1630,9 +2022,19 @@ void ui_command(const char *line)
 		free(p);
 	} else if (!strcmp(name, "feedkeys") && arg) {
 		feedkeys(arg);
+	} else if (!strcmp(name, "pipe")) {
+		msg_pipe(arg);
+	} else if (!strcmp(name, "undo")) {
+		msg_undo(app.count ? app.count : 1);
+	} else if (!strcmp(name, "delete_motion")) {
+		/* only meaningful as a key, where a motion can follow */
+		ui_status(1, "delete_motion works as a key in a list");
 	} else if (!strcmp(name, "cmdline")) {
 		app.cmdline = 1;
-		ed_set(&app.cmd, "");
+		app.recall = -1;
+		/* as in vim, a command typed over a selection acts on it */
+		ed_set(&app.cmd, w && w->type == W_LIST && w->visual ?
+		       "'<,'>" : "");
 	} else {
 		ui_status(1, "unknown command: %s", name);
 	}
@@ -1671,31 +2073,73 @@ static int dispatch(const char *ctx, const char *tok)
 	app.keys[0] = 0;
 	if (m == 2) {
 		char *c = xstrdup(cmd);
+		struct win *w = focused();
 
-		ui_command(c);
+		if (w && w->type == W_LIST)
+			list_run(w, c);
+		else
+			ui_command(c);
 		free(c);
 		return 1;
 	}
 	return 0;
 }
 
+static void show_vim_message(void)
+{
+	int error;
+	const char *msg = vim_message(&error);
+
+	if (msg)
+		ui_status(error, "%s", msg);
+}
+
+/* feed a key to a composer field and act on what the editor asks for */
+static void editor_key(struct editor *e, const char *tok, const char *text)
+{
+	int r;
+
+	app.status[0] = 0;
+	r = ed_key(e, tok, text, cfg.vim_edit);
+	show_vim_message();
+	if (r == ED_ENTER) {
+		ui_command("next_field");
+	} else if (r == ED_EX) {
+		/* may close the window that holds e */
+		char *line = xstrdup(vim_command());
+
+		ui_command(line);
+		free(line);
+	}
+}
+
 /* feed the pending sequence and tok to the compose editor */
 static void compose_key(struct win *w, const char *tok, const char *text)
 {
 	struct editor *e = &w->f[w->field];
+	const char *cmd = NULL;
 	char pend[64], *p;
+	int inserting = e->mode == ED_INSERT || e->mode == ED_REPLACE;
 
-	if (e->mode == ED_INSERT || !cfg.vim_edit || e->replace) {
-		if (!strcmp(tok, "<Tab>") || !strcmp(tok, "<S-Tab>")) {
-			if (w->field < 3 || !cfg.vim_edit) {
-				ui_command(tok[1] == 'S' ? "prev_field" :
-					   "next_field");
-				return;
-			}
+	app.dirty = 1;
+	if (inserting || !cfg.vim_edit || e->typeover) {
+		if ((!strcmp(tok, "<Tab>") || !strcmp(tok, "<S-Tab>")) &&
+		    (w->field < 3 || !cfg.vim_edit)) {
+			ui_command(tok[1] == 'S' ? "prev_field" :
+				   "next_field");
+			return;
 		}
-		if (ed_key(e, tok, text, cfg.vim_edit) == ED_ENTER)
-			ui_command("next_field");
-		app.dirty = 1;
+		editor_key(e, tok, text);
+		return;
+	}
+	/*
+	 * an unfinished command takes every key, so that "f " or "r:" are
+	 * not read as bindings, and ":" is the editor's own command line
+	 */
+	if (ed_pending(e) || (!app.keys[0] &&
+			      bind_match(win_ctx(w), tok, &cmd) == 2 &&
+			      !strcmp(cmd, "cmdline"))) {
+		editor_key(e, tok, text);
 		return;
 	}
 	if (dispatch(win_ctx(w), tok))
@@ -1708,12 +2152,10 @@ static void compose_key(struct win *w, const char *tok, const char *text)
 			'>') - p + 1) : 1;
 
 		snprintf(t, sizeof(t), "%.*s", (int)l, p);
-		ed_key(e, t, t, 1);
+		ed_key(e, t, NULL, 1);
 		p += l;
 	}
-	if (ed_key(e, tok, text, 1) == ED_ENTER)
-		ui_command("next_field");
-	app.dirty = 1;
+	editor_key(e, tok, text);
 }
 
 static void wizard_key(const char *tok, const char *text)
@@ -1743,13 +2185,55 @@ static void wizard_key(const char *tok, const char *text)
 
 static void key_tok(const char *tok, const char *text);
 
+/* the text a replayed key would have typed */
+static const char *token_text(const char *t)
+{
+	if (!strcmp(t, "<Space>"))
+		return " ";
+	if (!strcmp(t, "<lt>"))
+		return "<";
+	return t[0] != '<' || !t[1] ? t : "";
+}
+
+/*
+ * handle a typed key: record it for a macro, then type whatever a macro
+ * asked for. A macro stops when another window takes the focus, so that
+ * its remaining keys never act on mail.
+ */
+static void key_input(const char *tok, const char *text)
+{
+	struct win *w;
+	char next[KEYLEN];
+
+	if (vim_recording()) {
+		vim_record(tok);
+		/* outside the composer "q" has no editor to stop it */
+		w = focused();
+		if (!strcmp(tok, "q") && !app.pick && !app.cmdline && w &&
+		    w->type != W_COMPOSE) {
+			vim_stop_recording();
+			app.dirty = 1;
+			return;
+		}
+	}
+	key_tok(tok, text);
+	w = focused();
+	while (vim_next(next)) {
+		if (focused() != w || !w || w->type != W_COMPOSE) {
+			vim_abort();
+			break;
+		}
+		key_tok(next, token_text(next));
+	}
+}
+
 static void key(struct event *ev)
 {
 	char tok[32];
 
 	key_token(ev, tok, sizeof(tok));
 	if (tok[0])
-		key_tok(tok, ev->text);
+		key_input(tok, ev->text);
 }
 
 /* replay a key sequence written in binding notation, as vim's feedkeys */
@@ -1829,6 +2313,23 @@ static void key_tok(const char *tok, const char *text)
 			app.cmdline = 0;
 			return;
 		}
+		if (!strcmp(tok, "<Up>") || !strcmp(tok, "<Down>")) {
+			char *line = ed_text(&app.cmd);
+			const char *at = pipe_argument(line), *old;
+			int i = app.recall + (tok[1] == 'U' ? 1 : -1);
+
+			if (at && (old = pipe_recall(i))) {
+				char *s = xasprintf("%.*s%s",
+						    (int)(at - line), line,
+						    old);
+
+				ed_set(&app.cmd, s);
+				app.recall = i;
+				free(s);
+			}
+			free(line);
+			return;
+		}
 		r = ed_key(&app.cmd, tok, ev->text, 0);
 		if (r == ED_ENTER || r == ED_ESCAPE) {
 			char *line = ed_text(&app.cmd);
@@ -1846,6 +2347,16 @@ static void key_tok(const char *tok, const char *text)
 	}
 	if (w && w->view.b && !app.keys[0] && sel_key(w, tok, ev->text))
 		return;
+	if (w && w->type == W_LIST) {
+		const char *cmd = NULL;
+
+		if (list_key(w, tok, bind_match(win_ctx(w), tok, &cmd) != 0))
+			return;
+		/* an unbound key cancels what was being typed */
+		if (!dispatch(win_ctx(w), tok))
+			list_reset();
+		return;
+	}
 	if (!dispatch(win_ctx(w), tok) && !strcmp(tok, "<Esc>"))
 		app.keys[0] = 0;
 }
@@ -1886,6 +2397,7 @@ static void click(int button)
 	wh = hit_kind_at(app.mx, app.my, H_WIN);
 	if (!h)
 		return;
+	list_reset();
 	app.dirty = 1;
 	if (h->kind != H_MENU)
 		app.menu_open = 0;
@@ -1936,11 +2448,19 @@ static void click(int button)
 		else if (h->a == 3)
 			ui_command("draft");
 		break;
-	case H_ROW:
+	case H_ROW: {
+		int lo, hi;
+
 		if (had_menu && button == 1)
 			break;
 		app.focus = app.leaves[h->a];
-		focused()->sel = h->b;
+		list_range(focused(), &lo, &hi);
+		/* the context menu of a selection acts on all of it */
+		if (!(button == 3 && focused()->visual && h->b >= lo &&
+		      h->b <= hi)) {
+			focused()->visual = 0;
+			focused()->sel = h->b;
+		}
 		if (button == 3) {
 			app.ctx_open = 1;
 			app.ctx_x = app.mx;
@@ -1949,6 +2469,7 @@ static void click(int button)
 			ui_command("open");
 		}
 		break;
+	}
 	case H_WIN:
 		app.focus = app.leaves[h->a];
 		if (button == 1 && !had_menu && !app.pick)
@@ -1982,9 +2503,7 @@ static void wheel(float dy)
 			w->top = 0;
 		app.dirty = 1;
 	} else if (w->type == W_COMPOSE) {
-		w->f[3].top += dy > 0 ? 3 : -3;
-		if (w->f[3].top < 0)
-			w->f[3].top = 0;
+		ed_scroll(&w->f[3], dy > 0 ? 3 : -3);
 		app.dirty = 1;
 	} else {
 		scroll(w, dy * 3);
@@ -2004,6 +2523,7 @@ static void menu_command(const char *cmd)
 		return;
 	}
 	picker_close();
+	list_reset();
 	app.cmdline = app.ctx_open = 0;
 	app.keys[0] = 0;
 	ui_command(cmd);
@@ -2180,11 +2700,37 @@ void hit_add(Clay_ElementId id, int kind, int a, int b)
 	app.hits[app.nhits++].b = b;
 }
 
+/* the editor that has the keyboard in vim terms, or NULL */
+struct editor *ui_vim_editor(void)
+{
+	struct win *w = focused();
+
+	if (app.wizard || app.pick || app.cmdline || !w)
+		return NULL;
+	if (w->type == W_COMPOSE)
+		return cfg.vim_edit ? &w->f[w->field] : NULL;
+	return w->view.b && (w->type == W_MSG || w->type == W_TEXT) ?
+	    &w->view : NULL;
+}
+
 /* name of the current mode; *color gets the index of its theme colour */
 const char *editor_ctx_mode(int *color)
 {
+	static const struct {
+		const char *name;
+		int color;
+	} modes[] = {
+		[ED_NORMAL] = { "NORMAL", C_MODE_NORMAL },
+		[ED_INSERT] = { "INSERT", C_MODE_INSERT },
+		[ED_VISUAL] = { "VISUAL", C_MODE_VISUAL },
+		[ED_VLINE] = { "V-LINE", C_MODE_VLINE },
+		[ED_VBLOCK] = { "V-BLOCK", C_MODE_VBLOCK },
+		[ED_REPLACE] = { "REPLACE", C_MODE_REPLACE },
+	};
+	struct editor *e = ui_vim_editor();
 	struct win *w = focused();
-	struct editor *e = NULL;
+	const char *prompt = e ? ed_prompt(e) : NULL;
+	int mode;
 
 	if (app.wizard) {
 		*color = C_MODE_SETUP;
@@ -2194,27 +2740,25 @@ const char *editor_ctx_mode(int *color)
 		*color = C_MODE_FIND;
 		return "FIND";
 	}
-	if (app.cmdline) {
+	if (app.cmdline || (prompt && *prompt == ':')) {
 		*color = C_MODE_COMMAND;
 		return "COMMAND";
 	}
-	if (w && w->type == W_COMPOSE)
-		e = &w->f[w->field];
-	else if (w && w->view.b && (w->type == W_MSG || w->type == W_TEXT))
-		e = &w->view;
-	switch (e ? e->mode : ED_NORMAL) {
-	case ED_INSERT:
-		*color = C_MODE_INSERT;
-		return "INSERT";
-	case ED_VISUAL:
+	if (prompt) {
+		*color = C_MODE_FIND;
+		return "SEARCH";
+	}
+	if (w && w->type == W_LIST && w->visual) {
 		*color = C_MODE_VISUAL;
 		return "VISUAL";
-	case ED_VLINE:
-		*color = C_MODE_VLINE;
-		return "V-LINE";
 	}
-	*color = C_MODE_NORMAL;
-	return "NORMAL";
+	/* without vim keys a composer is always inserting */
+	if (!e && w && w->type == W_COMPOSE)
+		mode = w->f[w->field].mode;
+	else
+		mode = e ? e->mode : ED_NORMAL;
+	*color = modes[mode].color;
+	return modes[mode].name;
 }
 
 static void on_signal(int s)

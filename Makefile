@@ -96,12 +96,12 @@ install: epis
 	chmod 755 $(DESTDIR)$(PREFIX)/bin/epis
 	cp -f epis.1 $(DESTDIR)$(MANPREFIX)/man1/epis.1
 	chmod 644 $(DESTDIR)$(MANPREFIX)/man1/epis.1
-	mkdir -p $(DESTDIR)$(PREFIX)/icons/hicolor/256x256/apps/
-	cp -f epis-icon.png $(DESTDIR)$(PREFIX)/icons/hicolor/256x256/apps/epis-icon.png
+	mkdir -p $(DESTDIR)$(PREFIX)/icons/hicolor/256x256/apps
+	cp -f epis-icon.png $(DESTDIR)$(PREFIX)/icons/hicolor/256x256/apps
 	chmod 644 $(DESTDIR)$(PREFIX)/icons/hicolor/256x256/apps/epis-icon.png
 	sed 's|@BINDIR@|$(BINDIR)|g' epis.desktop.in > epis.desktop
 	sed -i 's|@ICONDIR@|$(ICONDIR)|g' epis.desktop
-	mv epis.desktop $(DESTDIR)$(PREFIX)/share/applications/epis.desktop
+	mv epis.desktop $(DESTDIR)$(PREFIX)/share/applications
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/epis $(DESTDIR)$(MANPREFIX)/man1/epis.1
